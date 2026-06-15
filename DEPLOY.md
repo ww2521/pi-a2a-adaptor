@@ -1,62 +1,61 @@
-# pi-a2a-adaptor 部署指南
+# Deploy Guide
 
-## 部署到 pi
+## Deploy to pi
 
-将**整个项目目录**复制到 pi 的扩展目录：
+Copy the **entire project directory** to pi's extensions folder:
 
 ```bash
-# 在 pi 主机上执行
+# On the pi host
 mkdir -p ~/.pi/agent/extensions/
-# 将整个 pi-a2a-adaptor 目录复制过去
 cp -r /path/to/pi-a2a-adaptor ~/.pi/agent/extensions/
 ```
 
-或者 SCP：
+Or via SCP from your development machine:
 
 ```bash
-scp -r /home/ww2521/.openclaw/workspace/pi-a2a-adaptor pi@<pi-host>:~/.pi/agent/extensions/
+scp -r pi-a2a-adaptor pi@<pi-host>:~/.pi/agent/extensions/
 ```
 
-## 最终目录结构
+## Final Directory Structure
 
 ```
 ~/.pi/agent/extensions/pi-a2a-adaptor/
-├── package.json           ← 含 "pi": {"extensions": ["./src/index.ts"]}
+├── package.json           ← contains "pi": {"extensions": ["./pi-extension/index.ts"]}
 ├── src/
-│   ├── index.ts           ← 导出
-│   ├── client.ts          ← A2AClient 核心
+│   ├── index.ts           ← library exports
+│   ├── client.ts          ← A2AClient core
 │   ├── registry.ts        ← AgentRegistry
 │   ├── task-manager.ts    ← TaskManager
-│   ├── types.ts           ← 类型定义
-│   └── errors.ts          ← 错误类型
+│   ├── types.ts           ← type definitions
+│   └── errors.ts          ← error types
 └── pi-extension/
-    └── index.ts           ← pi 插件入口（命令+工具注册）
+    └── index.ts           ← pi extension entry (commands + tools)
 ```
 
-**不需要编译。** pi 通过 jiti 直接加载 TypeScript。
+**No build step needed.** pi uses [jiti](https://github.com/unjs/jiti) to load TypeScript directly.
 
-## package.json 关键字段
+## Key package.json Field
 
 ```json
 {
   "name": "pi-a2a-adaptor",
   "pi": {
-    "extensions": ["./src/index.ts"]
+    "extensions": ["./pi-extension/index.ts"]
   }
 }
 ```
 
-`pi.extensions` 告诉 pi 哪些文件是扩展入口。
+The `pi.extensions` field tells pi which files are extension entry points.
 
-## 重启 pi
+## Restart pi
 
 ```bash
 pi restart
-# 或热重载
+# Or hot-reload from within pi
 /reload
 ```
 
-## 验证
+## Verify
 
 ```
 /a2a-help
@@ -64,12 +63,17 @@ pi restart
 /a2a-send <agent-url> "hello"
 ```
 
-## 排错
+## Troubleshooting
 
 ```bash
-# 查看扩展日志
+# Check extension logs
 cat ~/.pi/logs/extensions.log | grep a2a
 
-# 确认目录结构
+# Verify directory structure
 ls -la ~/.pi/agent/extensions/pi-a2a-adaptor/src/
 ```
+
+Common issues:
+- **Extension not loaded** — check that `package.json` has the correct `pi.extensions` path and that all `.ts` files are present
+- **Cannot find module** — verify that `pi-extension/index.ts` imports from `../src/...` correctly
+- **Runtime errors** — check `~/.pi/logs/extensions.log` for stack traces
