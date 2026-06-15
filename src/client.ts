@@ -64,6 +64,7 @@ export class A2AClient {
 
   async sendMessage(agent: RemoteAgent, message: Message, options: TaskOptions = {}): Promise<A2ATask | Message> {
     if (!message.contextId) message.contextId = this.generateId();
+    message.kind = "message";
 
     const request = this.createRequest(METHODS.SEND_MESSAGE, {
       message,
@@ -92,6 +93,7 @@ export class A2AClient {
     options: TaskOptions = {}
   ): Promise<A2ATask> {
     if (!message.contextId) message.contextId = this.generateId();
+    message.kind = "message";
 
     const request = this.createRequest(METHODS.STREAM_MESSAGE, {
       message,
