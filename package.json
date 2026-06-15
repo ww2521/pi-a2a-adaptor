@@ -4,6 +4,13 @@
   "description": "A2A protocol client for pi coding agent",
   "type": "module",
   "pi": {
-    "extensions": ["./pi-extension/index.ts"]
+    "extensions": [
+      "./pi-extension/index.ts"
+    ]
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.3",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9"
   }
 }

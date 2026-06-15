@@ -48,10 +48,18 @@ const DEFAULT_CONFIG: A2AConfig = {
 // ─── Helpers ───
 
 function resolveAgent(ref: string): RemoteAgent {
-  // Try by name first
+  // 1. Try by index (1-based from /a2a-agents output)
+  const idx = parseInt(ref, 10);
+  if (!isNaN(idx) && idx > 0) {
+    const agents = registry!.list();
+    if (idx <= agents.length) return agents[idx - 1];
+  }
+
+  // 2. Try by name
   const found = registry!.lookup(ref);
   if (found) return found;
-  // Treat as URL
+
+  // 3. Treat as URL
   return {
     name: ref,
     description: "",
@@ -147,7 +155,7 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       const list = agents.map((a, i) => `${i + 1}. ${a.name} (${a.url}) - ${a.skills.length} skills`).join("\n");
-      ctx.ui?.notify?.(`Discovered Agents:\n${list}`, "info");
+      ctx.ui?.notify?.(`Discovered Agents:\n${list}\n\nUse number, name, or URL with /a2a-send`, "info");
     },
   });
 
