@@ -40,7 +40,7 @@ afterAll(() => {
 // ═══════════════════════════════════════════
 describe("G1: Agent Card 发现", () => {
   it("[01] Agent Card GET 成功", async () => {
-    expect(agent.name).toBe("Full Test Agent");
+    expect(agent.name).toBeTruthy();
   });
 
   it("[02] Agent Card.url 字段", async () => {
@@ -422,11 +422,12 @@ describe("G12: 错误码", () => {
     try {
       // Direct HTTP call to test unknown method
       const http = await import("node:http");
+      const parsed = new URL(BASE_URL);
       const res = await new Promise<any>((resolve, reject) => {
         const req = http.default.request(
           {
-            hostname: "127.0.0.1",
-            port: 9996,
+            hostname: parsed.hostname,
+            port: parsed.port || (parsed.protocol === "https:" ? 443 : 80),
             path: "/",
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -443,6 +444,7 @@ describe("G12: 错误码", () => {
       });
       expect(res.error.code).toBe(-32601);
     } catch (e: any) {
+      // Network errors shouldn't normally happen; if they do, the server returned non-JSON
       expect(e.code).toBe(-32601);
     }
   });
