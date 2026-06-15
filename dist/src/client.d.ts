@@ -1,0 +1,34 @@
+import type { A2ATask, ClientConfig, ListTasksParams, ListTasksResult, Message, PushNotificationConfig, RemoteAgent, SecurityConfig, TaskOptions, TaskUpdateCallback } from "./types.js";
+export declare class A2AClient {
+    private config;
+    private security;
+    private pendingStreams;
+    private requestIdCounter;
+    constructor(config: ClientConfig, security: SecurityConfig);
+    discoverAgent(url: string): Promise<RemoteAgent>;
+    sendMessage(agent: RemoteAgent, message: Message, options?: TaskOptions): Promise<A2ATask | Message>;
+    sendStreamingMessage(agent: RemoteAgent, message: Message, onUpdate: TaskUpdateCallback, options?: TaskOptions): Promise<A2ATask>;
+    getTask(agent: RemoteAgent, taskId: string, historyLength?: number): Promise<A2ATask>;
+    cancelTask(agent: RemoteAgent, taskId: string): Promise<A2ATask>;
+    listTasks(agent: RemoteAgent, params?: ListTasksParams): Promise<ListTasksResult>;
+    resubscribeToTask(agent: RemoteAgent, taskId: string, onUpdate: TaskUpdateCallback, signal?: AbortSignal): Promise<void>;
+    setPushNotification(agent: RemoteAgent, taskId: string, config: PushNotificationConfig): Promise<PushNotificationConfig>;
+    getPushNotification(agent: RemoteAgent, taskId: string): Promise<PushNotificationConfig>;
+    listPushNotificationConfigs(agent: RemoteAgent, taskId: string): Promise<PushNotificationConfig[]>;
+    deletePushNotificationConfig(agent: RemoteAgent, taskId: string, configId: string): Promise<void>;
+    cancelAll(): void;
+    private readonly TERMINAL_STATES;
+    private waitForTask;
+    private sseRequest;
+    private createRequest;
+    private buildSendConfig;
+    private nextRequestId;
+    private generateId;
+    private delay;
+    private getDispatchUrl;
+    private httpMod;
+    private httpPostJSON;
+    private httpGet;
+    private sendStreamingRequest;
+    private buildAuthHeaders;
+}

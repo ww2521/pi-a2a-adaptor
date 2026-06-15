@@ -1,0 +1,9 @@
+{
+  "name": "pi-a2a-adaptor",
+  "version": "0.1.0",
+  "description": "A2A protocol client for pi coding agent",
+  "type": "module",
+  "pi": {
+    "extensions": ["./pi-extension/index.ts"]
+  }
+}

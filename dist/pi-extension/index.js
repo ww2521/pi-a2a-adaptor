@@ -1,0 +1,498 @@
+/**
+ * pi-a2a-adaptor pi-extension
+ *
+ * pi coding agent 扩展入口 — 注册 /a2a-* 命令和工具
+ */
+import { A2AClient } from "../src/client.js";
+import { AgentRegistry } from "../src/registry.js";
+import { TaskManager } from "../src/task-manager.js";
+// ─── Global State ───
+let a2aClient = null;
+let registry = null;
+let taskManager = null;
+let config = null;
+// ─── Default Config ───
+const DEFAULT_CONFIG = {
+    client: {
+        timeout: 30000,
+        retryAttempts: 3,
+        retryDelay: 1000,
+        maxConcurrentTasks: 10,
+        streamingEnabled: true,
+    },
+    server: {
+        enabled: false,
+        port: 10000,
+        host: "0.0.0.0",
+        basePath: "/a2a",
+    },
+    discovery: {
+        cacheEnabled: true,
+        cacheTtl: 300000,
+        agentCardPath: "/.well-known/agent-card.json",
+    },
+    security: {
+        defaultScheme: "none",
+        verifySsl: true,
+    },
+};
+// ─── Helpers ───
+function resolveAgent(ref) {
+    // Try by name first
+    const found = registry.lookup(ref);
+    if (found)
+        return found;
+    // Treat as URL
+    return {
+        name: ref,
+        description: "",
+        url: ref,
+        version: "1.0.0",
+        capabilities: {},
+        skills: [],
+        defaultInputModes: ["application/json"],
+        defaultOutputModes: ["application/json"],
+        discoveredAt: Date.now(),
+    };
+}
+function extractTextFromResult(task) {
+    if (task.artifacts && task.artifacts.length > 0) {
+        return task.artifacts[0].parts
+            .filter((p) => p.kind === "text" && p.text)
+            .map((p) => p.text)
+            .join("\n");
+    }
+    if (task.status?.message?.parts) {
+        return task.status.message.parts
+            .filter((p) => p.kind === "text" && p.text)
+            .map((p) => p.text)
+            .join("\n");
+    }
+    return `Task ${task.id}: ${task.status?.state}`;
+}
+// ─── Extension Entry ───
+export default function (pi) {
+    // ─── Session Lifecycle ───
+    pi.on("session_start", async (_event, ctx) => {
+        config = DEFAULT_CONFIG;
+        a2aClient = new A2AClient(config.client, config.security);
+        registry = new AgentRegistry(config.discovery.cacheTtl);
+        taskManager = new TaskManager(a2aClient, registry);
+        ctx.ui?.notify?.("A2A adaptor initialized", "info");
+    });
+    pi.on("session_end", async () => {
+        a2aClient?.cancelAll();
+        a2aClient = null;
+        registry = null;
+        taskManager = null;
+        config = null;
+    });
+    // ═══════════════════════════════════════════════════════════
+    // COMMANDS
+    // ═══════════════════════════════════════════════════════════
+    /**
+     * /a2a-discover <url>
+     */
+    pi.registerCommand("a2a-discover", {
+        description: "Discover an A2A agent at a URL",
+        handler: async (args, ctx) => {
+            const url = args.trim();
+            if (!url) {
+                ctx.ui?.notify?.("Usage: /a2a-discover <url>", "warning");
+                return;
+            }
+            try {
+                const agent = await registry.discover(a2aClient, url);
+                const info = [
+                    `Name: ${agent.name}`,
+                    `Description: ${agent.description}`,
+                    `Version: ${agent.version}`,
+                    `URL: ${agent.url}`,
+                    `Skills: ${agent.skills.map((s) => s.name).join(", ")}`,
+                    `Streaming: ${agent.capabilities.streaming ? "yes" : "no"}`,
+                    `Push Notifications: ${agent.capabilities.pushNotifications ? "yes" : "no"}`,
+                ].join("\n");
+                ctx.ui?.notify?.(`Discovered: ${agent.name}\n${info}`, "success");
+            }
+            catch (err) {
+                ctx.ui?.notify?.(`Discovery failed: ${err.message}`, "error");
+            }
+        },
+    });
+    /**
+     * /a2a-agents
+     */
+    pi.registerCommand("a2a-agents", {
+        description: "List all discovered A2A agents",
+        handler: async (_args, ctx) => {
+            const agents = registry.list();
+            if (agents.length === 0) {
+                ctx.ui?.notify?.("No agents discovered. Use /a2a-discover <url>", "info");
+                return;
+            }
+            const list = agents.map((a, i) => `${i + 1}. ${a.name} (${a.url}) - ${a.skills.length} skills`).join("\n");
+            ctx.ui?.notify?.(`Discovered Agents:\n${list}`, "info");
+        },
+    });
+    /**
+     * /a2a-send <agent-ref> <message>
+     */
+    pi.registerCommand("a2a-send", {
+        description: "Send a task to an A2A agent",
+        handler: async (args, ctx) => {
+            const parts = args.trim().split(/\s+/);
+            if (parts.length < 2) {
+                ctx.ui?.notify?.("Usage: /a2a-send <agent-url-or-name> <message>", "warning");
+                return;
+            }
+            const agentRef = parts[0];
+            const message = parts.slice(1).join(" ");
+            try {
+                const agent = resolveAgent(agentRef);
+                ctx.ui?.notify?.(`Sending to ${agent.name}...`, "info");
+                const result = await taskManager.sendTask(agent, message, {
+                    polling: { intervalMs: 2000, maxAttempts: 60, timeoutMs: 120000 },
+                });
+                const text = extractTextFromResult(result);
+                ctx.ui?.notify?.(`Result:\n${text}`, "success");
+            }
+            catch (err) {
+                ctx.ui?.notify?.(`Task failed: ${err.message}`, "error");
+            }
+        },
+    });
+    /**
+     * /a2a-broadcast <message> --agents <url1,url2,...>
+     */
+    pi.registerCommand("a2a-broadcast", {
+        description: "Broadcast a task to multiple agents in parallel",
+        handler: async (args, ctx) => {
+            const agentsMatch = args.match(/--agents\s+([^\s]+)/);
+            const message = args.replace(/--agents\s+[^\s]+/, "").trim();
+            if (!agentsMatch || !message) {
+                ctx.ui?.notify?.("Usage: /a2a-broadcast <message> --agents <url1,url2,...>", "warning");
+                return;
+            }
+            const urls = agentsMatch[1].split(",");
+            try {
+                ctx.ui?.notify?.(`Broadcasting to ${urls.length} agents...`, "info");
+                const results = await taskManager.sendParallelTasks(urls.map((url) => ({
+                    agent: resolveAgent(url),
+                    message,
+                    options: { timeout: 60000 },
+                })));
+                const summary = results.map((r, i) => {
+                    const status = r.status?.state || "unknown";
+                    return `[${i + 1}] ${results[i] ? "✓" : "✗"} ${urls[i]}: ${status}`;
+                }).join("\n");
+                ctx.ui?.notify?.(`Results:\n${summary}`, "info");
+            }
+            catch (err) {
+                ctx.ui?.notify?.(`Broadcast failed: ${err.message}`, "error");
+            }
+        },
+    });
+    /**
+     * /a2a-chain <agent1> <task1> | <agent2> <task2> | ...
+     */
+    pi.registerCommand("a2a-chain", {
+        description: "Chain tasks across multiple agents sequentially",
+        handler: async (args, ctx) => {
+            const steps = args.split("|").map((s) => s.trim()).filter(Boolean);
+            if (steps.length === 0) {
+                ctx.ui?.notify?.("Usage: /a2a-chain <agent1> <task1> | <agent2> <task2> | ...", "warning");
+                return;
+            }
+            const chainSteps = [];
+            try {
+                for (const step of steps) {
+                    const parts = step.split(/\s+/);
+                    if (parts.length < 2) {
+                        ctx.ui?.notify?.(`Invalid step: ${step}`, "error");
+                        return;
+                    }
+                    const agentRef = parts[0];
+                    const task = parts.slice(1).join(" ");
+                    const agent = resolveAgent(agentRef);
+                    chainSteps.push({ agent, message: task, options: undefined });
+                }
+                ctx.ui?.notify?.(`Executing chain of ${chainSteps.length} steps...`, "info");
+                const result = await taskManager.sendChainTasks(chainSteps);
+                const text = extractTextFromResult(result);
+                ctx.ui?.notify?.(`Chain completed:\n${text}`, "success");
+            }
+            catch (err) {
+                ctx.ui?.notify?.(`Chain failed: ${err.message}`, "error");
+            }
+        },
+    });
+    /**
+     * /a2a-status <task-id> [agent-url]
+     */
+    pi.registerCommand("a2a-status", {
+        description: "Get status of an A2A task",
+        handler: async (args, ctx) => {
+            const parts = args.trim().split(/\s+/);
+            if (parts.length < 1) {
+                ctx.ui?.notify?.("Usage: /a2a-status <task-id> [agent-url]", "warning");
+                return;
+            }
+            const taskId = parts[0];
+            const agentUrl = parts[1];
+            try {
+                let agent;
+                if (agentUrl) {
+                    agent = resolveAgent(agentUrl);
+                }
+                else {
+                    ctx.ui?.notify?.("Agent URL required. Usage: /a2a-status <task-id> <agent-url>", "error");
+                    return;
+                }
+                const task = await a2aClient.getTask(agent, taskId);
+                const info = [
+                    `Task ID: ${task.id}`,
+                    `State: ${task.status.state}`,
+                    `Context ID: ${task.contextId}`,
+                    `Artifacts: ${task.artifacts?.length || 0}`,
+                    `History: ${task.history?.length || 0} messages`,
+                ].join("\n");
+                ctx.ui?.notify?.(info, "info");
+            }
+            catch (err) {
+                ctx.ui?.notify?.(`Failed to get status: ${err.message}`, "error");
+            }
+        },
+    });
+    /**
+     * /a2a-cancel <task-id> [agent-url]
+     */
+    pi.registerCommand("a2a-cancel", {
+        description: "Cancel an A2A task",
+        handler: async (args, ctx) => {
+            const parts = args.trim().split(/\s+/);
+            if (parts.length < 2) {
+                ctx.ui?.notify?.("Usage: /a2a-cancel <task-id> <agent-url>", "warning");
+                return;
+            }
+            const taskId = parts[0];
+            const agent = resolveAgent(parts[1]);
+            try {
+                const task = await a2aClient.cancelTask(agent, taskId);
+                ctx.ui?.notify?.(`Task ${taskId} canceled (state: ${task.status.state})`, "success");
+            }
+            catch (err) {
+                ctx.ui?.notify?.(`Failed to cancel: ${err.message}`, "error");
+            }
+        },
+    });
+    /**
+     * /a2a-list [context-id]
+     */
+    pi.registerCommand("a2a-list", {
+        description: "List tasks on a remote agent",
+        handler: async (args, ctx) => {
+            const parts = args.trim().split(/\s+/);
+            if (parts.length < 2) {
+                ctx.ui?.notify?.("Usage: /a2a-list <agent-url> [context-id]", "warning");
+                return;
+            }
+            const agent = resolveAgent(parts[0]);
+            const contextId = parts[1] || undefined;
+            try {
+                const result = await a2aClient.listTasks(agent, contextId ? { contextId } : {});
+                if (result.tasks.length === 0) {
+                    ctx.ui?.notify?.("No tasks found", "info");
+                    return;
+                }
+                const list = result.tasks.map((t) => `${t.id.slice(0, 8)}...  ${t.status.state}  ${t.artifacts?.length || 0} artifacts`).join("\n");
+                ctx.ui?.notify?.(`Tasks (${result.totalSize || result.tasks.length}):\n${list}`, "info");
+            }
+            catch (err) {
+                ctx.ui?.notify?.(`Failed to list tasks: ${err.message}`, "error");
+            }
+        },
+    });
+    /**
+     * /a2a-resubscribe <task-id> <agent-url>
+     */
+    pi.registerCommand("a2a-resubscribe", {
+        description: "Resubscribe to a task's event stream",
+        handler: async (args, ctx) => {
+            const parts = args.trim().split(/\s+/);
+            if (parts.length < 2) {
+                ctx.ui?.notify?.("Usage: /a2a-resubscribe <task-id> <agent-url>", "warning");
+                return;
+            }
+            const taskId = parts[0];
+            const agent = resolveAgent(parts[1]);
+            try {
+                ctx.ui?.notify?.(`Resubscribing to task ${taskId.slice(0, 8)}...`, "info");
+                const updates = [];
+                await a2aClient.resubscribeToTask(agent, taskId, (u) => {
+                    updates.push(`[${u.status?.state || "update"}] ${JSON.stringify(u).slice(0, 200)}`);
+                });
+                if (updates.length === 0) {
+                    ctx.ui?.notify?.("No updates received", "info");
+                }
+                else {
+                    ctx.ui?.notify?.(`Updates:\n${updates.slice(-5).join("\n")}`, "info");
+                }
+            }
+            catch (err) {
+                ctx.ui?.notify?.(`Resubscribe failed: ${err.message}`, "error");
+            }
+        },
+    });
+    /**
+     * /a2a-config <key> <value>
+     */
+    pi.registerCommand("a2a-config", {
+        description: "Configure A2A settings",
+        handler: async (args, ctx) => {
+            const parts = args.trim().split(/\s+/);
+            if (parts.length < 2) {
+                ctx.ui?.notify?.("Usage: /a2a-config <key> <value>\nKeys: timeout, retryAttempts, cacheTtl, verifySsl", "warning");
+                return;
+            }
+            const key = parts[0];
+            const value = parts.slice(1).join(" ");
+            try {
+                if (!config)
+                    throw new Error("A2A not initialized");
+                switch (key) {
+                    case "timeout":
+                        config.client.timeout = parseInt(value, 10);
+                        break;
+                    case "retryAttempts":
+                        config.client.retryAttempts = parseInt(value, 10);
+                        break;
+                    case "cacheTtl":
+                        config.discovery.cacheTtl = parseInt(value, 10);
+                        break;
+                    case "verifySsl":
+                        config.security.verifySsl = value.toLowerCase() === "true";
+                        break;
+                    default:
+                        ctx.ui?.notify?.(`Unknown key: ${key}`, "error");
+                        return;
+                }
+                // Reinitialize client with new config
+                a2aClient = new A2AClient(config.client, config.security);
+                taskManager = new TaskManager(a2aClient, registry);
+                ctx.ui?.notify?.(`Configuration updated: ${key} = ${value}`, "success");
+            }
+            catch (err) {
+                ctx.ui?.notify?.(`Failed to set config: ${err.message}`, "error");
+            }
+        },
+    });
+    /**
+     * /a2a-help
+     */
+    pi.registerCommand("a2a-help", {
+        description: "Show A2A adaptor help",
+        handler: async (_args, ctx) => {
+            const help = `
+A2A Adaptor Commands:
+
+Discovery:
+  /a2a-discover <url>           - Discover agent at URL
+  /a2a-agents                   - List discovered agents
+
+Task Management:
+  /a2a-send <agent> <message>   - Send task to agent
+  /a2a-broadcast <msg> --agents <urls> - Broadcast to multiple agents
+  /a2a-chain <agent1> <task1> | <agent2> <task2> | ... - Chain tasks
+  /a2a-status <task-id> <url>   - Get task status
+  /a2a-cancel <task-id> <url>   - Cancel a task
+  /a2a-list <url> [context-id]  - List tasks on agent
+  /a2a-resubscribe <task-id> <url> - Resubscribe to task stream
+
+Configuration:
+  /a2a-config <key> <value>     - Configure settings
+  /a2a-help                     - Show this help
+
+Examples:
+  /a2a-discover https://agent.example.com
+  /a2a-send https://agent.example.com "Analyze this code"
+  /a2a-broadcast "Check security" --agents https://agent1.com,https://agent2.com
+  /a2a-chain scout "find bugs" | worker "fix {previous}"
+  /a2a-config timeout 60000
+      `.trim();
+            ctx.ui?.notify?.(help, "info");
+        },
+    });
+    // ═══════════════════════════════════════════════════════════
+    // TOOLS
+    // ═══════════════════════════════════════════════════════════
+    /**
+     * a2a_call tool
+     */
+    pi.registerTool({
+        name: "a2a_call",
+        label: "A2A Agent Call",
+        description: "Call a remote A2A agent to perform a task",
+        parameters: {
+            type: "object",
+            properties: {
+                agent_url: { type: "string", description: "URL or name of the A2A agent" },
+                message: { type: "string", description: "Task message to send" },
+                timeout: { type: "number", description: "Timeout in milliseconds", default: 60000 },
+            },
+            required: ["agent_url", "message"],
+        },
+        async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+            if (!taskManager) {
+                return { content: [{ kind: "text", text: "A2A not initialized" }], isError: true };
+            }
+            try {
+                const agent = resolveAgent(params.agent_url);
+                const result = await taskManager.sendTask(agent, params.message, {
+                    timeout: params.timeout ?? 60000,
+                    polling: { intervalMs: 2000, maxAttempts: 30, timeoutMs: 120000 },
+                });
+                const text = extractTextFromResult(result);
+                return { content: [{ kind: "text", text }] };
+            }
+            catch (err) {
+                return { content: [{ kind: "text", text: `Error: ${err.message}` }], isError: true };
+            }
+        },
+    });
+    /**
+     * a2a_parallel tool
+     */
+    pi.registerTool({
+        name: "a2a_parallel",
+        label: "A2A Parallel Call",
+        description: "Call multiple A2A agents in parallel with the same message",
+        parameters: {
+            type: "object",
+            properties: {
+                agent_urls: { type: "array", items: { type: "string" }, description: "Array of agent URLs or names" },
+                message: { type: "string", description: "Task message to send to all agents" },
+                timeout: { type: "number", description: "Timeout in milliseconds", default: 60000 },
+            },
+            required: ["agent_urls", "message"],
+        },
+        async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+            if (!taskManager) {
+                return { content: [{ kind: "text", text: "A2A not initialized" }], isError: true };
+            }
+            try {
+                const urls = params.agent_urls;
+                const steps = urls.map((url) => ({
+                    agent: resolveAgent(url),
+                    message: params.message,
+                    options: { timeout: params.timeout ?? 60000 },
+                }));
+                const results = await taskManager.sendParallelTasks(steps);
+                const summary = results.map((r, i) => `[${urls[i]}] ${r.status?.state || "unknown"}:\n${extractTextFromResult(r)}`).join("\n\n");
+                return { content: [{ kind: "text", text: summary }] };
+            }
+            catch (err) {
+                return { content: [{ kind: "text", text: `Error: ${err.message}` }], isError: true };
+            }
+        },
+    });
+}
