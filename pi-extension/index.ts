@@ -219,26 +219,33 @@ export default function (pi: ExtensionAPI) {
       const message = parts.slice(1).join(" ");
       try {
         const agent = resolveAgent(agentRef);
-        const result = await taskManager!.sendTask(agent, message, {
-          timeout: 5000,
-          polling: { intervalMs: 1000, maxAttempts: 1, timeoutMs: 5000 },
-        });
+        // Submit without auto-polling — we'll handle polling in background
+        const result = await taskManager!.sendTask(agent, message, { timeout: 5000 });
 
-        const taskId = result.id;
-        const pending: PendingTask = {
-          id: taskId,
-          agentUrl: agent.url,
-          agentName: agent.name,
-          message,
-          submittedAt: Date.now(),
-          pollingInterval: null,
-        };
+        // Guard: result must be a task (not a bare Message)
+        if (!result || !(result as any).id || !(result as any).status) {
+          const text = extractTextFromResult(result as any);
+          ctx.ui?.notify?.(`Agent replied:\n${text}`, "success");
+          return;
+        }
 
-        const state = result.status?.state;
+        const taskId = (result as any).id as string;
+        const state = (result as any).status?.state;
+
         if (state && ["completed", "failed", "canceled", "rejected"].includes(state)) {
-          const text = extractTextFromResult(result);
+          // Already done — notify immediately, don't track
+          const text = extractTextFromResult(result as any);
           ctx.ui?.notify?.(`[A2A ${agent.name}] Task ${taskId.slice(0, 8)} completed:\n${text}`, "success");
         } else {
+          // Still running — track and start background polling
+          const pending: PendingTask = {
+            id: taskId,
+            agentUrl: agent.url,
+            agentName: agent.name,
+            message,
+            submittedAt: Date.now(),
+            pollingInterval: null,
+          };
           const pollInterval = setInterval(async () => {
             try {
               const task = await a2aClient!.getTask(agent, taskId);
@@ -258,9 +265,9 @@ export default function (pi: ExtensionAPI) {
             }
           }, 5000);
           pending.pollingInterval = pollInterval;
+          pendingTasks.set(taskId, pending);
         }
 
-        pendingTasks.set(taskId, pending);
         ctx.ui?.notify?.(`Task submitted: ${taskId.slice(0, 8)} → ${agent.name}. Use /a2a-pending to track.`, "info");
       } catch (err: any) {
         ctx.ui?.notify?.(`Task submission failed: ${err.message}`, "error");

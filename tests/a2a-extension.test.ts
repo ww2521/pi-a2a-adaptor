@@ -1,0 +1,176 @@
+/**
+ * Extension-level integration tests for pi-a2a-adaptor.
+ *
+ * Tests the command-handler logic patterns (send vs send-async,
+ * polling behavior, response shape handling) against the real
+ * strict-server mock.
+ *
+ * Run: npx vitest run tests/a2a-extension.test.ts
+ */
+
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { A2AClient } from "../src/client.js";
+import { TaskManager } from "../src/task-manager.js";
+import { AgentRegistry } from "../src/registry.js";
+import type { Message, RemoteAgent } from "../src/types.js";
+
+const BASE_URL = "http://127.0.0.1:9996";
+
+let client: A2AClient;
+let taskManager: TaskManager;
+let registry: AgentRegistry;
+let agent: RemoteAgent;
+
+function userMsg(text: string, mid?: string, cid?: string): Message {
+  return {
+    role: "user",
+    parts: [{ kind: "text", text }],
+    messageId: mid || `msg-${Date.now()}`,
+    ...(cid ? { contextId: cid } : {}),
+  };
+}
+
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+beforeAll(async () => {
+  client = new A2AClient(
+    { timeout: 10000, retryAttempts: 0, retryDelay: 0, maxConcurrentTasks: 10, streamingEnabled: true },
+    { defaultScheme: "none", verifySsl: true },
+  );
+  registry = new AgentRegistry(300000);
+  taskManager = new TaskManager(client, registry);
+  // Discover and cache the agent for all tests
+  agent = await registry.discover(client, BASE_URL);
+});
+
+afterAll(() => {
+  client.cancelAll();
+});
+
+// ═══════════════════════════════════════════
+// E1: /a2a-send — blocking (waits for completion)
+// ═══════════════════════════════════════════
+describe("E1: /a2a-send blocking behavior", () => {
+  it("[E1-01] sendTask waits for completed on sync task", async () => {
+    const result = await taskManager.sendTask(agent, "sync block test", {
+      polling: { intervalMs: 1000, maxAttempts: 60, timeoutMs: 30000 },
+    });
+    expect(result).toHaveProperty("id");
+    expect(result.status.state).toBe("completed");
+  });
+});
+
+// ═══════════════════════════════════════════
+// E2: /a2a-send-async — submit without polling
+// ═══════════════════════════════════════════
+describe("E2: /a2a-send-async submit pattern", () => {
+  it("[E2-01] sendMessage without polling returns immediately (submitted state)", async () => {
+    // This is what /a2a-send-async does: no polling config
+    const result = await client.sendMessage(agent, userMsg("delay:5", undefined, "ctx-async-1"), {
+      timeout: 5000,
+    });
+    // Should return the initial task, NOT throw on polling
+    expect(result).toHaveProperty("id");
+    const state = (result as any).status?.state;
+    // Should be submitted (not completed yet since we didn't poll)
+    expect(state).toBe("submitted");
+  });
+
+  it("[E2-02] sendMessage without polling on sync task returns completed", async () => {
+    // Sync tasks complete instantly — should return completed
+    const result = await client.sendMessage(agent, userMsg("sync async test", undefined, "ctx-async-2"), {
+      timeout: 5000,
+    });
+    expect(result).toHaveProperty("id");
+    expect((result as any).status.state).toBe("completed");
+  });
+
+  it("[E2-03] sendMessage with maxAttempts=1 causes timeout error (regression test)", async () => {
+    // This is the BUG we fixed: polling + maxAttempts=1 → waitForTask → immediate fail
+    // sendTask internal uses sendMessage with polling, so test that path
+    await expect(
+      taskManager.sendTask(agent, "delay:3", {
+        timeout: 5000,
+        polling: { intervalMs: 1000, maxAttempts: 1, timeoutMs: 5000 },
+      }),
+    ).rejects.toThrow(/exceeded max attempts|timed out/);
+  });
+
+  it("[E2-04] Background polling pattern works after submit", async () => {
+    // Simulate what /a2a-send-async should do:
+    // 1. Submit without polling
+    // 2. Get task ID
+    // 3. Poll manually
+    const result = await client.sendMessage(agent, userMsg("delay:2", undefined, "ctx-async-3"), {
+      timeout: 5000,
+    });
+    const taskId = (result as any).id;
+    expect((result as any).status.state).toBe("submitted");
+
+    // Manual polling (what setInterval would do)
+    let state = "submitted";
+    for (let i = 0; i < 15; i++) {
+      await sleep(300);
+      const task = await client.getTask(agent, taskId);
+      state = task.status.state;
+      if (state === "completed") break;
+    }
+    expect(state).toBe("completed");
+  });
+});
+
+// ═══════════════════════════════════════════
+// E3: Response shape handling
+// ═══════════════════════════════════════════
+describe("E3: Response shape handling", () => {
+  it("[E3-01] sendMessage returns wrapped task shape", async () => {
+    const result = await client.sendMessage(agent, userMsg("shape test", undefined, "ctx-shape"), {
+      timeout: 5000,
+    });
+    // Should always have id + status regardless of server shape
+    expect(result).toHaveProperty("id");
+    expect(result).toHaveProperty("status");
+    expect(result).toHaveProperty("status.state");
+  });
+});
+
+// ═══════════════════════════════════════════
+// E4: Task result extraction (same as extractTextFromResult in extension)
+// ═══════════════════════════════════════════
+describe("E4: Task result extraction", () => {
+  function extractTextFromResult(task: any): string {
+    if (task.artifacts && task.artifacts.length > 0) {
+      return task.artifacts[0].parts
+        .filter((p: any) => p.kind === "text" && p.text)
+        .map((p: any) => p.text)
+        .join("\n");
+    }
+    if (task.status?.message?.parts) {
+      return task.status.message.parts
+        .filter((p: any) => p.kind === "text" && p.text)
+        .map((p: any) => p.text)
+        .join("\n");
+    }
+    return `Task ${task.id}: ${task.status?.state}`;
+  }
+
+  it("[E4-01] Extract text from completed task artifacts", async () => {
+    const result = await taskManager.sendTask(agent, "extract test hello", {
+      polling: { intervalMs: 1000, maxAttempts: 60, timeoutMs: 30000 },
+    });
+    const text = extractTextFromResult(result);
+    expect(text).toContain("extract test hello");
+  });
+
+  it("[E4-02] Extract text fallback to task state", async () => {
+    // Submit without waiting, check that we can still get meaningful info
+    const result = await client.sendMessage(agent, userMsg("fallback test", undefined, "ctx-fallback"), {
+      timeout: 5000,
+    });
+    const text = extractTextFromResult(result);
+    // Should either have the echo text or the task state
+    expect(text.length).toBeGreaterThan(0);
+  });
+});
