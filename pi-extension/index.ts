@@ -33,6 +33,45 @@ interface TaskRecord {
 
 const taskMap = new Map<string, TaskRecord>();
 
+// ─── Persistence ───
+
+const STORAGE_DIR = path.join(process.env.HOME || "", ".pi", "agent", "a2a");
+const CONFIG_FILE = `${STORAGE_DIR}/config.json`;
+const AGENTS_FILE = `${STORAGE_DIR}/agents.json`;
+
+import * as fs from "node:fs";
+import * as path from "node:path";
+
+function ensureStorageDir(): void {
+  if (!fs.existsSync(STORAGE_DIR)) fs.mkdirSync(STORAGE_DIR, { recursive: true });
+}
+
+function loadConfig(): Partial<A2AConfig> {
+  try {
+    if (fs.existsSync(CONFIG_FILE)) {
+      return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
+    }
+  } catch { /* ignore */ }
+  return {};
+}
+
+function saveConfig(cfg: A2AConfig): void {
+  try { ensureStorageDir(); fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2)); } catch { /* ignore */ }
+}
+
+function loadAgents(): RemoteAgent[] {
+  try {
+    if (fs.existsSync(AGENTS_FILE)) {
+      return JSON.parse(fs.readFileSync(AGENTS_FILE, "utf-8"));
+    }
+  } catch { /* ignore */ }
+  return [];
+}
+
+function saveAgents(agents: RemoteAgent[]): void {
+  try { ensureStorageDir(); fs.writeFileSync(AGENTS_FILE, JSON.stringify(agents, null, 2)); } catch { /* ignore */ }
+}
+
 // ─── Default Config ───
 
 const DEFAULT_CONFIG: A2AConfig = {
@@ -132,13 +171,36 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     config = DEFAULT_CONFIG;
+    // Load persisted config overrides
+    const saved = loadConfig();
+    if (saved.client?.timeout !== undefined) config.client.timeout = saved.client!.timeout;
+    if (saved.client?.retryAttempts !== undefined) config.client.retryAttempts = saved.client!.retryAttempts;
+    if (saved.client?.retryDelay !== undefined) config.client.retryDelay = saved.client!.retryDelay;
+    if (saved.discovery?.cacheTtl !== undefined) config.discovery.cacheTtl = saved.discovery!.cacheTtl;
+    if (saved.security?.defaultScheme !== undefined) config.security.defaultScheme = saved.security!.defaultScheme;
+    if (saved.security?.verifySsl !== undefined) config.security.verifySsl = saved.security!.verifySsl;
+    if (saved.security?.bearerToken !== undefined) config.security.bearerToken = saved.security!.bearerToken;
+    if (saved.security?.apiKey !== undefined) config.security.apiKey = saved.security!.apiKey;
+
     a2aClient = new A2AClient(config.client, config.security);
     registry = new AgentRegistry(config.discovery.cacheTtl);
+    // Restore persisted agents
+    const savedAgents = loadAgents();
+    for (const a of savedAgents) registry.add(a);
+
     taskManager = new TaskManager(a2aClient, registry);
-    ctx.ui?.notify?.("A2A adaptor initialized", "info");
+    if (savedAgents.length > 0) {
+      ctx.ui?.notify?.(`A2A adaptor initialized. ${savedAgents.length} agents restored from last session.`, "info");
+    } else {
+      ctx.ui?.notify?.("A2A adaptor initialized", "info");
+    }
   });
 
   pi.on("session_shutdown", async () => {
+    // Persist config and agents before shutdown
+    if (config) saveConfig(config);
+    if (registry) saveAgents(registry.list());
+
     // Stop all async polling
     for (const [, tr] of taskMap) {
       if (tr.pollingInterval) clearInterval(tr.pollingInterval);
