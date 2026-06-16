@@ -18,18 +18,20 @@ let registry: AgentRegistry | null = null;
 let taskManager: TaskManager | null = null;
 let config: A2AConfig | null = null;
 
-// ─── Async Task Tracking ───
+// ─── Task Tracking ───
+// All submitted tasks tracked for auto-lookup by task-id.
+// /a2a-status can look up task by ID alone if it was submitted this session.
 
-interface PendingTask {
-  id: string;
+interface TaskRecord {
+  taskId: string;
   agentUrl: string;
   agentName: string;
   message: string;
   submittedAt: number;
-  pollingInterval: ReturnType<typeof setInterval> | null;
+  pollingInterval: ReturnType<typeof setInterval> | null; // null = sync/done
 }
 
-const pendingTasks = new Map<string, PendingTask>();
+const taskMap = new Map<string, TaskRecord>();
 
 // ─── Default Config ───
 
@@ -102,6 +104,27 @@ function extractTextFromResult(task: any): string {
   return `Task ${task.id}: ${task.status?.state}`;
 }
 
+function recordTask(taskId: string, agent: RemoteAgent, message: string, pollingInterval: ReturnType<typeof setInterval> | null = null) {
+  taskMap.set(taskId, {
+    taskId,
+    agentUrl: agent.url,
+    agentName: agent.name,
+    message,
+    submittedAt: Date.now(),
+    pollingInterval,
+  });
+}
+
+function findTaskRecord(taskId: string): TaskRecord | null {
+  // Exact match
+  if (taskMap.has(taskId)) return taskMap.get(taskId)!;
+  // Prefix match (user pastes short ID)
+  for (const [id, rec] of taskMap) {
+    if (id.startsWith(taskId) || id.slice(0, 8).startsWith(taskId)) return rec;
+  }
+  return null;
+}
+
 // ─── Extension Entry ───
 
 export default function (pi: ExtensionAPI) {
@@ -117,10 +140,10 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_shutdown", async () => {
     // Stop all async polling
-    for (const [, pt] of pendingTasks) {
-      if (pt.pollingInterval) clearInterval(pt.pollingInterval);
+    for (const [, tr] of taskMap) {
+      if (tr.pollingInterval) clearInterval(tr.pollingInterval);
     }
-    pendingTasks.clear();
+    taskMap.clear();
     a2aClient?.cancelAll();
     a2aClient = null;
     registry = null;
@@ -197,6 +220,7 @@ export default function (pi: ExtensionAPI) {
           polling: { intervalMs: 2000, maxAttempts: 60, timeoutMs: 120000 },
         });
         const text = extractTextFromResult(result);
+        recordTask((result as any).id, agent, message);
         ctx.ui?.notify?.(`Result:\n${text}`, "success");
       } catch (err: any) {
         ctx.ui?.notify?.(`Task failed: ${err.message}`, "error");
@@ -219,10 +243,8 @@ export default function (pi: ExtensionAPI) {
       const message = parts.slice(1).join(" ");
       try {
         const agent = resolveAgent(agentRef);
-        // Submit without auto-polling — we'll handle polling in background
         const result = await taskManager!.sendTask(agent, message, { timeout: 5000 });
 
-        // Guard: result must be a task (not a bare Message)
         if (!result || !(result as any).id || !(result as any).status) {
           const text = extractTextFromResult(result as any);
           ctx.ui?.notify?.(`Agent replied:\n${text}`, "success");
@@ -233,39 +255,30 @@ export default function (pi: ExtensionAPI) {
         const state = (result as any).status?.state;
 
         if (state && ["completed", "failed", "canceled", "rejected"].includes(state)) {
-          // Already done — notify immediately, don't track
           const text = extractTextFromResult(result as any);
           ctx.ui?.notify?.(`[A2A ${agent.name}] Task ${taskId.slice(0, 8)} completed:\n${text}`, "success");
+          recordTask(taskId, agent, message);
         } else {
-          // Still running — track and start background polling
-          const pending: PendingTask = {
-            id: taskId,
-            agentUrl: agent.url,
-            agentName: agent.name,
-            message,
-            submittedAt: Date.now(),
-            pollingInterval: null,
-          };
           const pollInterval = setInterval(async () => {
             try {
               const task = await a2aClient!.getTask(agent, taskId);
               if (["completed", "failed", "canceled", "rejected"].includes(task.status.state)) {
                 clearInterval(pollInterval);
-                pending.pollingInterval = null;
+                const rec = taskMap.get(taskId);
+                if (rec) rec.pollingInterval = null;
                 const text = extractTextFromResult(task);
                 if (task.status.state === "completed") {
                   ctx.ui?.notify?.(`[A2A ${agent.name}] Task ${taskId.slice(0, 8)} completed:\n${text}`, "success");
                 } else {
                   ctx.ui?.notify?.(`[A2A ${agent.name}] Task ${taskId.slice(0, 8)} ${task.status.state}.`, "warning");
                 }
-                pendingTasks.delete(taskId);
               }
             } catch {
               // Poll error — keep trying
             }
           }, 5000);
-          pending.pollingInterval = pollInterval;
-          pendingTasks.set(taskId, pending);
+
+          recordTask(taskId, agent, message, pollInterval);
         }
 
         ctx.ui?.notify?.(`Task submitted: ${taskId.slice(0, 8)} → ${agent.name}. Use /a2a-pending to track.`, "info");
@@ -281,16 +294,16 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("a2a-pending", {
     description: "List pending async A2A tasks",
     handler: async (_args, ctx) => {
-      if (pendingTasks.size === 0) {
+      const pending = [...taskMap.values()].filter((r) => r.pollingInterval !== null);
+      if (pending.length === 0) {
         ctx.ui?.notify?.("No pending async tasks", "info");
         return;
       }
-      const lines: string[] = [];
-      for (const [id, pt] of pendingTasks) {
-        const elapsed = Math.round((Date.now() - pt.submittedAt) / 1000);
-        lines.push(`${id.slice(0, 8)} → ${pt.agentName} (${elapsed}s ago): ${pt.message.slice(0, 60)}`);
-      }
-      ctx.ui?.notify?.(`Pending Tasks:\n${lines.join("\n")}\n\nUse /a2a-status <task-id> <url> for details`, "info");
+      const lines = pending.map((r) => {
+        const elapsed = Math.round((Date.now() - r.submittedAt) / 1000);
+        return `${r.taskId.slice(0, 8)} → ${r.agentName} (${elapsed}s ago): ${r.message.slice(0, 60)}`;
+      });
+      ctx.ui?.notify?.(`Pending Tasks:\n${lines.join("\n")}\n\nUse /a2a-status <task-id> for details`, "info");
     },
   });
 
@@ -373,15 +386,26 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       const taskId = parts[0];
-      const agentUrl = parts[1];
       try {
-        let agent: RemoteAgent;
-        if (agentUrl) {
-          agent = resolveAgent(agentUrl);
-        } else {
-          ctx.ui?.notify?.("Agent URL required. Usage: /a2a-status <task-id> <agent-url>", "error");
+        let agentUrl: string | null = null;
+
+        // 1. Check if we have this task locally
+        const rec = findTaskRecord(taskId);
+        if (rec) {
+          agentUrl = rec.agentUrl;
+        }
+
+        // 2. Use provided URL if available
+        if (parts.length >= 2) {
+          agentUrl = parts[1];
+        }
+
+        if (!agentUrl) {
+          ctx.ui?.notify?.(`Task ${taskId.slice(0, 8)} not found. Either:\n  - Use /a2a-status <task-id> <agent-url>\n  - Or submit the task via this extension first`, "error");
           return;
         }
+
+        const agent = resolveAgent(agentUrl);
         const task = await a2aClient!.getTask(agent, taskId);
         const info = [
           `Task ID: ${task.id}`,
@@ -409,8 +433,16 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       const taskId = parts[0];
-      const agent = resolveAgent(parts[1]);
+      const agentRef = parts[1];
       try {
+        let agent: RemoteAgent;
+        // Try local record first
+        const rec = findTaskRecord(taskId);
+        if (rec) {
+          agent = resolveAgent(rec.agentUrl);
+        } else {
+          agent = resolveAgent(agentRef);
+        }
         const task = await a2aClient!.cancelTask(agent, taskId);
         ctx.ui?.notify?.(`Task ${taskId} canceled (state: ${task.status.state})`, "success");
       } catch (err: any) {
@@ -458,8 +490,15 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       const taskId = parts[0];
-      const agent = resolveAgent(parts[1]);
+      const agentRef = parts[1];
       try {
+        let agent: RemoteAgent;
+        const rec = findTaskRecord(taskId);
+        if (rec) {
+          agent = resolveAgent(rec.agentUrl);
+        } else {
+          agent = resolveAgent(agentRef);
+        }
         ctx.ui?.notify?.(`Resubscribing to task ${taskId.slice(0, 8)}...`, "info");
         const updates: string[] = [];
         await a2aClient!.resubscribeToTask(agent, taskId, (u) => {
@@ -537,10 +576,10 @@ Task Management:
   /a2a-pending                  - List pending async tasks
   /a2a-broadcast <msg> --agents <urls> - Broadcast to multiple agents
   /a2a-chain <agent1> <task1> | <agent2> <task2> | ... - Chain tasks
-  /a2a-status <task-id> <url>   - Get task status
-  /a2a-cancel <task-id> <url>   - Cancel a task
+  /a2a-status <task-id>         - Get task status (auto-finds agent if submitted here)
+  /a2a-cancel <task-id>         - Cancel a task (auto-finds agent if submitted here)
   /a2a-list <url> [context-id]  - List tasks on agent
-  /a2a-resubscribe <task-id> <url> - Resubscribe to task stream
+  /a2a-resubscribe <task-id>    - Resubscribe to task stream
 
 Configuration:
   /a2a-config <key> <value>     - Configure settings
@@ -551,6 +590,8 @@ Examples:
   /a2a-send https://agent.example.com "Analyze this code"
   /a2a-send-async https://agent.example.com "Long task"
   /a2a-pending
+  /a2a-status abc-123            # auto-finds agent
+  /a2a-status abc-123 https://x  # explicit URL
   /a2a-broadcast "Check security" --agents https://agent1.com,https://agent2.com
   /a2a-chain scout "find bugs" | worker "fix {previous}"
   /a2a-config timeout 60000
@@ -590,6 +631,7 @@ Examples:
           polling: { intervalMs: 2000, maxAttempts: 30, timeoutMs: 120000 },
         });
         const text = extractTextFromResult(result);
+        recordTask((result as any).id, agent, params.message as string);
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error: ${err.message}` }], isError: true };

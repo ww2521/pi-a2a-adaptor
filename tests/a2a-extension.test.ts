@@ -231,3 +231,102 @@ describe("E6: a2a_parallel tool pattern", () => {
     }
   });
 });
+
+// ═══════════════════════════════════════════
+// E7: /a2a-status — task lookup
+// ═══════════════════════════════════════════
+describe("E7: /a2a-status task lookup", () => {
+  it("[E7-01] getTask returns completed task", async () => {
+    const result = await taskManager.sendTask(agent, "status check test", {
+      polling: { intervalMs: 1000, maxAttempts: 60, timeoutMs: 30000 },
+    });
+    const task = await client.getTask(agent, result.id);
+    expect(task.id).toBe(result.id);
+    expect(task.status.state).toBe("completed");
+  });
+
+  it("[E7-02] getTask for non-existent task returns error", async () => {
+    await expect(client.getTask(agent, "non-existent-id")).rejects.toThrow(/Task not found/);
+  });
+});
+
+// ═══════════════════════════════════════════
+// E8: /a2a-cancel — task cancellation
+// ═══════════════════════════════════════════
+describe("E8: /a2a-cancel task cancellation", () => {
+  it("[E8-01] cancelTask on a delayed task", async () => {
+    const result = await client.sendMessage(agent, userMsg("delay:30", undefined, "ctx-cancel-1"), {
+      timeout: 5000,
+    });
+    const taskId = (result as any).id;
+    expect((result as any).status.state).toBe("submitted");
+
+    const canceled = await client.cancelTask(agent, taskId);
+    expect(canceled.status.state).toBe("canceled");
+  });
+
+  it("[E8-02] cancelTask on non-existent task returns error", async () => {
+    await expect(client.cancelTask(agent, "non-existent-id")).rejects.toThrow(/Task not found/);
+  });
+});
+
+// ═══════════════════════════════════════════
+// E9: /a2a-list — task listing
+// ═══════════════════════════════════════════
+describe("E9: /a2a-list task listing", () => {
+  it("[E9-01] listTasks returns tasks after submitting", async () => {
+    await taskManager.sendTask(agent, "list test setup", {
+      polling: { intervalMs: 1000, maxAttempts: 60, timeoutMs: 30000 },
+    });
+    const result = await client.listTasks(agent);
+    expect(result.tasks.length).toBeGreaterThan(0);
+    expect(result.totalSize).toBeGreaterThanOrEqual(result.tasks.length);
+  });
+
+  it("[E9-02] listTasks filters by status", async () => {
+    const result = await client.listTasks(agent, { status: "completed" });
+    for (const t of result.tasks) {
+      expect(t.status.state).toBe("completed");
+    }
+  });
+});
+
+// ═══════════════════════════════════════════
+// E10: /a2a-broadcast — multi-agent broadcast
+// ═══════════════════════════════════════════
+describe("E10: /a2a-broadcast multi-agent", () => {
+  it("[E10-01] sendParallelTasks with different messages per agent", async () => {
+    // Broadcast sends same message to multiple agents; simulate with same agent
+    const steps = [
+      { agent, message: "broadcast msg", options: { timeout: 15000 } },
+      { agent, message: "broadcast msg", options: { timeout: 15000 } },
+    ];
+    const results = await taskManager.sendParallelTasks(steps);
+    expect(results.length).toBe(2);
+    for (const r of results) {
+      expect(r.status.state).toBe("completed");
+      expect(extractTextFromResult(r)).toContain("broadcast msg");
+    }
+  });
+});
+
+// ═══════════════════════════════════════════
+// E11: /a2a-resubscribe — event stream re-subscription
+// ═══════════════════════════════════════════
+describe("E11: /a2a-resubscribe event stream", () => {
+  it("[E11-01] resubscribeToTask on completed task", async () => {
+    const result = await taskManager.sendTask(agent, "resubscribe test", {
+      polling: { intervalMs: 1000, maxAttempts: 60, timeoutMs: 30000 },
+    });
+    const updates: any[] = [];
+    await client.resubscribeToTask(agent, result.id, (u) => updates.push(u));
+    // Completed task should return at least one event (the task itself)
+    expect(updates.length).toBeGreaterThan(0);
+  });
+
+  it("[E11-02] resubscribeToTask on non-existent task returns error", async () => {
+    await expect(
+      client.resubscribeToTask(agent, "non-existent-id", () => {}),
+    ).rejects.toThrow(/Task not found/);
+  });
+});
