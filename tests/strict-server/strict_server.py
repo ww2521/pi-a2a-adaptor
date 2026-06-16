@@ -21,6 +21,37 @@ from starlette.requests import Request
 from starlette.routing import Route
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+
+# ─── Auth Middleware ───
+
+VALID_BEARER_TOKENS = {"test-token-123", "test-bearer-token-123"}
+VALID_API_KEYS = {"test-api-key-456", "test-key-456"}
+
+class AuthMiddleware(BaseHTTPMiddleware):
+    """Checks Authorization header for Bearer or ApiKey schemes. Skips agent card."""
+    async def dispatch(self, request: Request, call_next):
+        # Agent card is public for discovery
+        if request.url.path == "/.well-known/agent-card.json":
+            return await call_next(request)
+
+        auth = request.headers.get("Authorization", "")
+        if auth:
+            if auth.startswith("Bearer "):
+                token = auth[len("Bearer "):]
+                if token in VALID_BEARER_TOKENS:
+                    return await call_next(request)
+            elif auth.startswith("ApiKey "):
+                token = auth[len("ApiKey "):]
+                if token in VALID_API_KEYS:
+                    return await call_next(request)
+        # No valid auth → 401
+        return Response(
+            content=json.dumps({"jsonrpc": "2.0", "id": None, "error": {
+                "code": -32002, "message": "Unauthorized: invalid or missing token"
+            }}),
+            media_type="application/json", status_code=401,
+        )
 
 # ─── A2A Schema (matches fasta2a v0.6.1) ───
 
@@ -170,6 +201,9 @@ async def handle_agent_card_direct_task(request: Request):
 
 async def handle_agent_card_direct_msg(request: Request):
     return Response(content=make_agent_card_response(9998), media_type="application/json")
+
+async def handle_agent_card_auth(request: Request):
+    return Response(content=make_agent_card_response(9999), media_type="application/json")
 
 def validate_params(model, params):
     try:
@@ -383,40 +417,49 @@ async def _complete_after_delay(task_id, delay_secs, user_text):
 PORT_WRAPPED = 9996
 PORT_DIRECT_TASK = 9997
 PORT_DIRECT_MSG = 9998
+PORT_AUTH = 9999
 
-def create_app(agent_card_handler, dispatch_handler):
+def create_app(agent_card_handler, dispatch_handler, require_auth=False):
+    middlewares = [Middleware(CORSMiddleware, allow_origins=["*"])]
+    if require_auth:
+        middlewares.append(Middleware(AuthMiddleware))
     return Starlette(
         debug=True,
         routes=[
             Route("/.well-known/agent-card.json", agent_card_handler, methods=["GET"]),
             Route("/", dispatch_handler, methods=["POST"]),
         ],
-        middleware=[Middleware(CORSMiddleware, allow_origins=["*"])],
+        middleware=middlewares,
     )
 
 app_wrapped = create_app(handle_agent_card_wrapped, handle_dispatch_wrapped)
 app_direct_task = create_app(handle_agent_card_direct_task, handle_dispatch_direct_task)
 app_direct_msg = create_app(handle_agent_card_direct_msg, handle_dispatch_direct_msg)
+app_auth = create_app(handle_agent_card_auth, handle_dispatch_wrapped, require_auth=True)
 
 if __name__ == "__main__":
     import uvicorn
     config_wrapped = uvicorn.Config(app_wrapped, host="127.0.0.1", port=PORT_WRAPPED, log_level="warning")
     config_direct_task = uvicorn.Config(app_direct_task, host="127.0.0.1", port=PORT_DIRECT_TASK, log_level="warning")
     config_direct_msg = uvicorn.Config(app_direct_msg, host="127.0.0.1", port=PORT_DIRECT_MSG, log_level="warning")
+    config_auth = uvicorn.Config(app_auth, host="127.0.0.1", port=PORT_AUTH, log_level="warning")
 
     server_wrapped = uvicorn.Server(config_wrapped)
     server_direct_task = uvicorn.Server(config_direct_task)
     server_direct_msg = uvicorn.Server(config_direct_msg)
+    server_auth = uvicorn.Server(config_auth)
 
     async def serve_all():
         await asyncio.gather(
             server_wrapped.serve(),
             server_direct_task.serve(),
             server_direct_msg.serve(),
+            server_auth.serve(),
         )
 
     print(f"Serving wrapped on http://127.0.0.1:{PORT_WRAPPED}")
     print(f"Serving direct-task on http://127.0.0.1:{PORT_DIRECT_TASK}")
     print(f"Serving direct-message on http://127.0.0.1:{PORT_DIRECT_MSG}")
+    print(f"Serving auth-required on http://127.0.0.1:{PORT_AUTH}")
 
     asyncio.run(serve_all())

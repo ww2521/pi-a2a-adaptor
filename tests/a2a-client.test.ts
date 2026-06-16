@@ -550,3 +550,154 @@ describe("G12: Auth headers", () => {
     keyClient.cancelAll();
   });
 });
+
+// ═══════════════════════════════════════════
+// G13: Auth-required server e2e (port 9999)
+// ═══════════════════════════════════════════
+const AUTH_URL = "http://127.0.0.1:9999";
+
+describe("G13: Auth-required server e2e", () => {
+  it("[64] No auth → 401 on sendMessage", async () => {
+    const noAuthClient = new A2AClient(
+      { timeout: 5000, retryAttempts: 0, retryDelay: 0, maxConcurrentTasks: 10, streamingEnabled: true },
+      { defaultScheme: "none", verifySsl: true },
+    );
+    const agent = await noAuthClient.discoverAgent(AUTH_URL);
+    await expect(
+      noAuthClient.sendMessage(agent, userMsg("no auth test", undefined, "ctx-no-auth"))
+    ).rejects.toThrow(/Unauthorized|HTTP 401/);
+    noAuthClient.cancelAll();
+  });
+
+  it("[65] Wrong bearer token → 401", async () => {
+    const wrongClient = new A2AClient(
+      { timeout: 5000, retryAttempts: 0, retryDelay: 0, maxConcurrentTasks: 10, streamingEnabled: true },
+      { defaultScheme: "bearer", bearerToken: "wrong-token", verifySsl: true },
+    );
+    const agent = await wrongClient.discoverAgent(AUTH_URL);
+    await expect(
+      wrongClient.sendMessage(agent, userMsg("wrong token test", undefined, "ctx-wrong"))
+    ).rejects.toThrow(/Unauthorized|HTTP 401/);
+    wrongClient.cancelAll();
+  });
+
+  it("[66] Valid bearer token → 200 + completed task", async () => {
+    const authClient = new A2AClient(
+      { timeout: 10000, retryAttempts: 0, retryDelay: 0, maxConcurrentTasks: 10, streamingEnabled: true },
+      { defaultScheme: "bearer", bearerToken: "test-token-123", verifySsl: true },
+    );
+    const agent = await authClient.discoverAgent(AUTH_URL);
+    const result = await authClient.sendMessage(agent, userMsg("auth bearer test", undefined, "ctx-auth-bearer"));
+    expect(result).toHaveProperty("id");
+    expect((result as any).status.state).toBe("completed");
+    authClient.cancelAll();
+  });
+
+  it("[67] Valid API key → 200 + completed task", async () => {
+    const apiKeyClient = new A2AClient(
+      { timeout: 10000, retryAttempts: 0, retryDelay: 0, maxConcurrentTasks: 10, streamingEnabled: true },
+      { defaultScheme: "apiKey", apiKey: "test-api-key-456", verifySsl: true },
+    );
+    const agent = await apiKeyClient.discoverAgent(AUTH_URL);
+    const result = await apiKeyClient.sendMessage(agent, userMsg("auth apikey test", undefined, "ctx-auth-key"));
+    expect(result).toHaveProperty("id");
+    expect((result as any).status.state).toBe("completed");
+    apiKeyClient.cancelAll();
+  });
+
+  it("[68] Valid bearer token → tasks/get works", async () => {
+    const authClient = new A2AClient(
+      { timeout: 10000, retryAttempts: 0, retryDelay: 0, maxConcurrentTasks: 10, streamingEnabled: true },
+      { defaultScheme: "bearer", bearerToken: "test-bearer-token-123", verifySsl: true },
+    );
+    const agent = await authClient.discoverAgent(AUTH_URL);
+    const result = await authClient.sendMessage(agent, userMsg("gettask auth test", undefined, "ctx-auth-get"));
+    const taskId = (result as any).id;
+    const task = await authClient.getTask(agent, taskId);
+    expect(task.id).toBe(taskId);
+    expect(task.status.state).toBe("completed");
+    authClient.cancelAll();
+  });
+
+  it("[69] Valid bearer token → tasks/list works", async () => {
+    const authClient = new A2AClient(
+      { timeout: 10000, retryAttempts: 0, retryDelay: 0, maxConcurrentTasks: 10, streamingEnabled: true },
+      { defaultScheme: "bearer", bearerToken: "test-token-123", verifySsl: true },
+    );
+    const agent = await authClient.discoverAgent(AUTH_URL);
+    const list = await authClient.listTasks(agent);
+    expect(list.tasks.length).toBeGreaterThan(0);
+    authClient.cancelAll();
+  });
+
+  it("[70] Valid bearer token → tasks/cancel works", async () => {
+    const authClient = new A2AClient(
+      { timeout: 10000, retryAttempts: 0, retryDelay: 0, maxConcurrentTasks: 10, streamingEnabled: true },
+      { defaultScheme: "bearer", bearerToken: "test-token-123", verifySsl: true },
+    );
+    const agent = await authClient.discoverAgent(AUTH_URL);
+    // Create a delayed task
+    const result = await authClient.sendMessage(agent, userMsg("delay:30", undefined, "ctx-auth-cancel"));
+    const taskId = (result as any).id;
+    expect((result as any).status.state).toBe("submitted");
+    // Cancel it
+    const canceled = await authClient.cancelTask(agent, taskId);
+    expect(canceled.status.state).toBe("canceled");
+    authClient.cancelAll();
+  });
+
+  it("[71] Valid bearer token → message/stream works", async () => {
+    const authClient = new A2AClient(
+      { timeout: 10000, retryAttempts: 0, retryDelay: 0, maxConcurrentTasks: 10, streamingEnabled: true },
+      { defaultScheme: "bearer", bearerToken: "test-token-123", verifySsl: true },
+    );
+    const agent = await authClient.discoverAgent(AUTH_URL);
+    const events: any[] = [];
+    const result = await authClient.sendStreamingMessage(
+      agent,
+      userMsg("stream auth test", undefined, "ctx-auth-stream"),
+      (e) => events.push(e)
+    );
+    expect(events.length).toBeGreaterThan(0);
+    authClient.cancelAll();
+  });
+
+  it("[72] Valid bearer token → tasks/resubscribe works", async () => {
+    const authClient = new A2AClient(
+      { timeout: 10000, retryAttempts: 0, retryDelay: 0, maxConcurrentTasks: 10, streamingEnabled: true },
+      { defaultScheme: "bearer", bearerToken: "test-token-123", verifySsl: true },
+    );
+    const agent = await authClient.discoverAgent(AUTH_URL);
+    const result = await authClient.sendMessage(agent, userMsg("resub auth test", undefined, "ctx-auth-resub"));
+    const taskId = (result as any).id;
+    const updates: any[] = [];
+    await authClient.resubscribeToTask(agent, taskId, (u) => updates.push(u));
+    expect(updates.length).toBeGreaterThan(0);
+    authClient.cancelAll();
+  });
+
+  it("[73] Valid bearer token → pushNotification lifecycle works", async () => {
+    const authClient = new A2AClient(
+      { timeout: 10000, retryAttempts: 0, retryDelay: 0, maxConcurrentTasks: 10, streamingEnabled: true },
+      { defaultScheme: "bearer", bearerToken: "test-token-123", verifySsl: true },
+    );
+    const agent = await authClient.discoverAgent(AUTH_URL);
+    const result = await authClient.sendMessage(agent, userMsg("push auth test", undefined, "ctx-auth-push"));
+    const taskId = (result as any).id;
+    // set
+    const setRes = await authClient.setPushNotification(agent, taskId, {
+      url: "http://localhost:9998/notify", token: "push-token",
+    });
+    expect(setRes).toHaveProperty("id");
+    // get
+    const getRes = await authClient.getPushNotification(agent, taskId);
+    expect(getRes).toHaveProperty("taskId");
+    // list (returns array directly)
+    const configs = await authClient.listPushNotificationConfigs(agent, taskId);
+    expect(Array.isArray(configs)).toBe(true);
+    expect(configs.length).toBe(1);
+    // delete
+    await authClient.deletePushNotificationConfig(agent, taskId, (setRes as any).id);
+    authClient.cancelAll();
+  });
+});
