@@ -18,6 +18,19 @@ let registry: AgentRegistry | null = null;
 let taskManager: TaskManager | null = null;
 let config: A2AConfig | null = null;
 
+// ─── Async Task Tracking ───
+
+interface PendingTask {
+  id: string;
+  agentUrl: string;
+  agentName: string;
+  message: string;
+  submittedAt: number;
+  pollingInterval: ReturnType<typeof setInterval> | null;
+}
+
+const pendingTasks = new Map<string, PendingTask>();
+
 // ─── Default Config ───
 
 const DEFAULT_CONFIG: A2AConfig = {
@@ -103,6 +116,11 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async () => {
+    // Stop all async polling
+    for (const [, pt] of pendingTasks) {
+      if (pt.pollingInterval) clearInterval(pt.pollingInterval);
+    }
+    pendingTasks.clear();
     a2aClient?.cancelAll();
     a2aClient = null;
     registry = null;
@@ -183,6 +201,89 @@ export default function (pi: ExtensionAPI) {
       } catch (err: any) {
         ctx.ui?.notify?.(`Task failed: ${err.message}`, "error");
       }
+    },
+  });
+
+  /**
+   * /a2a-send-async <agent-ref> <message>
+   */
+  pi.registerCommand("a2a-send-async", {
+    description: "Send a task to an A2A agent asynchronously (returns immediately, polls in background)",
+    handler: async (args, ctx) => {
+      const parts = args.trim().split(/\s+/);
+      if (parts.length < 2) {
+        ctx.ui?.notify?.("Usage: /a2a-send-async <agent-url-or-name> <message>", "warning");
+        return;
+      }
+      const agentRef = parts[0];
+      const message = parts.slice(1).join(" ");
+      try {
+        const agent = resolveAgent(agentRef);
+        const result = await taskManager!.sendTask(agent, message, {
+          timeout: 5000,
+          polling: { intervalMs: 1000, maxAttempts: 1, timeoutMs: 5000 },
+        });
+
+        const taskId = result.id;
+        const pending: PendingTask = {
+          id: taskId,
+          agentUrl: agent.url,
+          agentName: agent.name,
+          message,
+          submittedAt: Date.now(),
+          pollingInterval: null,
+        };
+
+        const state = result.status?.state;
+        if (state && ["completed", "failed", "canceled", "rejected"].includes(state)) {
+          const text = extractTextFromResult(result);
+          ctx.ui?.notify?.(`[A2A ${agent.name}] Task ${taskId.slice(0, 8)} completed:\n${text}`, "success");
+        } else {
+          const pollInterval = setInterval(async () => {
+            try {
+              const task = await a2aClient!.getTask(agent, taskId);
+              if (["completed", "failed", "canceled", "rejected"].includes(task.status.state)) {
+                clearInterval(pollInterval);
+                pending.pollingInterval = null;
+                const text = extractTextFromResult(task);
+                if (task.status.state === "completed") {
+                  ctx.ui?.notify?.(`[A2A ${agent.name}] Task ${taskId.slice(0, 8)} completed:\n${text}`, "success");
+                } else {
+                  ctx.ui?.notify?.(`[A2A ${agent.name}] Task ${taskId.slice(0, 8)} ${task.status.state}.`, "warning");
+                }
+                pendingTasks.delete(taskId);
+              }
+            } catch {
+              // Poll error — keep trying
+            }
+          }, 5000);
+          pending.pollingInterval = pollInterval;
+        }
+
+        pendingTasks.set(taskId, pending);
+        ctx.ui?.notify?.(`Task submitted: ${taskId.slice(0, 8)} → ${agent.name}. Use /a2a-pending to track.`, "info");
+      } catch (err: any) {
+        ctx.ui?.notify?.(`Task submission failed: ${err.message}`, "error");
+      }
+    },
+  });
+
+  /**
+   * /a2a-pending
+   */
+  pi.registerCommand("a2a-pending", {
+    description: "List pending async A2A tasks",
+    handler: async (_args, ctx) => {
+      if (pendingTasks.size === 0) {
+        ctx.ui?.notify?.("No pending async tasks", "info");
+        return;
+      }
+      const lines: string[] = [];
+      for (const [id, pt] of pendingTasks) {
+        const elapsed = Math.round((Date.now() - pt.submittedAt) / 1000);
+        lines.push(`${id.slice(0, 8)} → ${pt.agentName} (${elapsed}s ago): ${pt.message.slice(0, 60)}`);
+      }
+      ctx.ui?.notify?.(`Pending Tasks:\n${lines.join("\n")}\n\nUse /a2a-status <task-id> <url> for details`, "info");
     },
   });
 
@@ -424,7 +525,9 @@ Discovery:
   /a2a-agents                   - List discovered agents
 
 Task Management:
-  /a2a-send <agent> <message>   - Send task to agent
+  /a2a-send <agent> <message>   - Send task (waits for result)
+  /a2a-send-async <agent> <msg> - Send task (returns immediately, notifies on completion)
+  /a2a-pending                  - List pending async tasks
   /a2a-broadcast <msg> --agents <urls> - Broadcast to multiple agents
   /a2a-chain <agent1> <task1> | <agent2> <task2> | ... - Chain tasks
   /a2a-status <task-id> <url>   - Get task status
@@ -439,6 +542,8 @@ Configuration:
 Examples:
   /a2a-discover https://agent.example.com
   /a2a-send https://agent.example.com "Analyze this code"
+  /a2a-send-async https://agent.example.com "Long task"
+  /a2a-pending
   /a2a-broadcast "Check security" --agents https://agent1.com,https://agent2.com
   /a2a-chain scout "find bugs" | worker "fix {previous}"
   /a2a-config timeout 60000
