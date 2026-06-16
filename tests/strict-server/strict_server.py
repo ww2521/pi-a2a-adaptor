@@ -3,10 +3,12 @@
 strict-server.py — Schema-strict A2A test server for e2e testing.
 Validates all incoming requests against fasta2a v0.6.1 pydantic schema.
 
-Runs three response shape variants on different ports:
+Runs multiple server variants on different ports:
+  - 9995: LiteLLM Gateway mock (/v1/agents + /a2a/{id}/.well-known/agent-card.json)
   - 9996: wrapped shape   (default) { result: { kind: "task", task: {...} } }
   - 9997: direct-task     { result: { id, status, ... } }
   - 9998: direct-message  { result: { role, parts, messageId } }
+  - 9999: auth-required   (same as 9996 but with Bearer/API key middleware)
 """
 import uuid
 import asyncio
@@ -137,6 +139,25 @@ class PushDeleteParams(BaseModel):
 
 tasks: dict = {}
 push_configs: dict = {}  # task_id -> list
+
+# LiteLLM Gateway mock state
+gateway_agents = [
+    {
+        "agent_id": "litellm-agent-1",
+        "agent_name": "litellm-agent",
+        "agent_card_params": {
+            "name": "LiteLLM Agent",
+            "description": "A test agent registered in LiteLLM Gateway",
+            "url": f"http://127.0.0.1:9995/a2a/litellm-agent",
+            "version": "1.0.0",
+            "defaultInputModes": ["application/json"],
+            "defaultOutputModes": ["application/json"],
+            "capabilities": {"streaming": True, "pushNotifications": True},
+            "skills": [{"id": "echo", "name": "Echo", "description": "Echo back", "tags": ["test"]}],
+        },
+        "litellm_params": {},
+    },
+]
 
 def make_task(message_data, context_id=None):
     task_id = str(uuid.uuid4())
@@ -412,8 +433,42 @@ async def _complete_after_delay(task_id, delay_secs, user_text):
     if task:
         complete_task(task_id, user_text)
 
+# ─── LiteLLM Gateway Mock (port 9995) ───
+
+async def handle_gateway_v1_agents(request: Request):
+    """GET /v1/agents — return list of registered agents."""
+    return Response(content=json.dumps(gateway_agents), media_type="application/json")
+
+async def handle_gateway_agent_card(request: Request):
+    """GET /a2a/{agent_id}/.well-known/agent-card.json — returns card with proxy URL."""
+    return Response(content=json.dumps({
+        "name": "LiteLLM Gateway Agent",
+        "description": "A test agent registered in LiteLLM Gateway",
+        "url": "http://127.0.0.1:9995/a2a/litellm-agent",
+        "version": "1.0.0",
+        "defaultInputModes": ["application/json"],
+        "defaultOutputModes": ["application/json"],
+        "capabilities": {"streaming": True, "pushNotifications": True},
+        "skills": [{"id": "echo", "name": "Echo", "description": "Echo back", "tags": ["test"]}],
+    }), media_type="application/json")
+
+async def handle_gateway_dispatch(request: Request):
+    """POST /a2a/{agent_id}/ — forward to wrapped dispatch."""
+    return await _handle_dispatch(request, "wrapped")
+
+app_gateway = Starlette(
+    debug=True,
+    routes=[
+        Route("/v1/agents", handle_gateway_v1_agents, methods=["GET"]),
+        Route("/a2a/{agent_id}/.well-known/agent-card.json", handle_gateway_agent_card, methods=["GET"]),
+        Route("/a2a/{agent_id}/", handle_gateway_dispatch, methods=["POST"]),
+    ],
+    middleware=[Middleware(CORSMiddleware, allow_origins=["*"])],
+)
+
 # ─── Apps per shape ───
 
+PORT_GATEWAY = 9995
 PORT_WRAPPED = 9996
 PORT_DIRECT_TASK = 9997
 PORT_DIRECT_MSG = 9998
@@ -439,11 +494,13 @@ app_auth = create_app(handle_agent_card_auth, handle_dispatch_wrapped, require_a
 
 if __name__ == "__main__":
     import uvicorn
+    config_gateway = uvicorn.Config(app_gateway, host="127.0.0.1", port=PORT_GATEWAY, log_level="warning")
     config_wrapped = uvicorn.Config(app_wrapped, host="127.0.0.1", port=PORT_WRAPPED, log_level="warning")
     config_direct_task = uvicorn.Config(app_direct_task, host="127.0.0.1", port=PORT_DIRECT_TASK, log_level="warning")
     config_direct_msg = uvicorn.Config(app_direct_msg, host="127.0.0.1", port=PORT_DIRECT_MSG, log_level="warning")
     config_auth = uvicorn.Config(app_auth, host="127.0.0.1", port=PORT_AUTH, log_level="warning")
 
+    server_gateway = uvicorn.Server(config_gateway)
     server_wrapped = uvicorn.Server(config_wrapped)
     server_direct_task = uvicorn.Server(config_direct_task)
     server_direct_msg = uvicorn.Server(config_direct_msg)
@@ -451,12 +508,14 @@ if __name__ == "__main__":
 
     async def serve_all():
         await asyncio.gather(
+            server_gateway.serve(),
             server_wrapped.serve(),
             server_direct_task.serve(),
             server_direct_msg.serve(),
             server_auth.serve(),
         )
 
+    print(f"Serving LiteLLM Gateway on http://127.0.0.1:{PORT_GATEWAY}")
     print(f"Serving wrapped on http://127.0.0.1:{PORT_WRAPPED}")
     print(f"Serving direct-task on http://127.0.0.1:{PORT_DIRECT_TASK}")
     print(f"Serving direct-message on http://127.0.0.1:{PORT_DIRECT_MSG}")

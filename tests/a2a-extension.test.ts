@@ -342,14 +342,42 @@ describe("E12: Task record short ID lookup", () => {
     });
     const fullId = result.id;
     const prefix = fullId.slice(0, 8);
-    // The client library getTask needs full UUID, but the extension layer
-    // must resolve prefix → full UUID before calling getTask.
-    // Here we verify the full UUID is a valid UUID string.
-    expect(fullId.length).toBeGreaterThan(10); // UUID length > short ID
+    expect(fullId.length).toBeGreaterThan(10);
     expect(fullId).not.toBe(prefix);
-    // Verify we can look up by the full ID
     const task = await client.getTask(agent, fullId);
     expect(task.id).toBe(fullId);
     expect(task.status.state).toBe("completed");
+  });
+});
+
+// ═══════════════════════════════════════════
+// E13: /a2a-discover-all — LiteLLM Gateway batch discovery
+// ═══════════════════════════════════════════
+const GATEWAY_URL = "http://127.0.0.1:9995";
+
+describe("E13: LiteLLM Gateway batch discovery", () => {
+  it("[E13-01] listGatewayAgents returns agent list", async () => {
+    const agents = await client.listGatewayAgents(GATEWAY_URL, "test-token-123");
+    expect(Array.isArray(agents)).toBe(true);
+    expect(agents.length).toBeGreaterThan(0);
+    expect(agents[0]).toHaveProperty("agent_name");
+    expect(agents[0]).toHaveProperty("agent_id");
+  });
+
+  it("[E13-02] discoverAgentFromGateway discovers agent via gateway path", async () => {
+    const agents = await client.listGatewayAgents(GATEWAY_URL, "test-token-123");
+    const ref = agents[0].agent_name;
+    const agent = await client.discoverAgentFromGateway(GATEWAY_URL, ref);
+    expect(agent).toHaveProperty("name");
+    expect(agent).toHaveProperty("url");
+    expect(agent.url).toContain("/a2a/");
+  });
+
+  it("[E13-03] discoverAgent preserves proxy path for gateway URL", async () => {
+    // Verifies that /a2a/litellm-agent/.well-known/agent-card.json is called
+    // not /.well-known/agent-card.json at origin level
+    const agent = await client.discoverAgent(`${GATEWAY_URL}/a2a/litellm-agent`);
+    expect(agent).toHaveProperty("name");
+    expect(agent).toHaveProperty("url");
   });
 });
