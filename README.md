@@ -140,7 +140,7 @@ npm install
 npx vitest run
 ```
 
-The test suite runs **103 tests across 3 test files** against a schema-strict mock server that implements the fasta2a wire format, covering:
+The test suite runs **114 tests across 3 test files** against a schema-strict mock server that implements the fasta2a wire format, covering:
 
 - Agent Card discovery
 - `message/send` (sync and async with polling)
@@ -165,6 +165,10 @@ Edit `~/.pi/agent/settings.json` or use `/a2a-config` at runtime:
 /a2a-config retryAttempts 3
 /a2a-config cacheTtl 300000
 /a2a-config verifySsl true
+
+# Task timeouts (default: send=120s, async=30s)
+/a2a-config sendTimeout 180000
+/a2a-config sendAsyncTimeout 60000
 
 # Auth (Bearer Token)
 /a2a-config defaultScheme bearer
