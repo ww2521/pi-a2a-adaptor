@@ -10,13 +10,15 @@ Inspired by [pi-a2a-communication](https://github.com/DrOlu/pi-a2a-communication
 
 ## Features
 
-- **Agent Discovery** — Auto-discover remote agents via `/.well-known/agent-card.json`
+- **Agent Discovery** — Auto-discover remote agents via `/.well-known/agent-card.json` (with `agent.json` fallback)
+- **LiteLLM Gateway** — Batch discover all agents from LiteLLM Agent Gateway (`/a2a-discover-all`)
 - **Task Management** — Send tasks, poll status, cancel, and list remote tasks
 - **Streaming** — SSE-based real-time task progress via `message/stream`
 - **Task Orchestration** — Chain and parallel task execution with artifact passing
 - **Long-running Tasks** — Configurable polling with timeout for tasks that take minutes
 - **Push Notifications** — Register callback URLs for async task completion
-- **13 Commands** — Full CLI interface via `/a2a-*` commands
+- **Auth Support** — Bearer Token and API Key via `/a2a-config`
+- **14 Commands** — Full CLI interface via `/a2a-*` commands
 - **2 Tools** — LLM-callable tools for single and parallel agent calls
 
 ## Quick Start
@@ -39,6 +41,13 @@ No build step required. Pi uses [jiti](https://github.com/unjs/jiti) to load Typ
 
 ```
 /a2a-discover https://your-agent.example.com
+```
+
+### Discover from LiteLLM Gateway
+
+```bash
+/a2a-discover-all http://localhost:4000         # uses configured bearerToken
+/a2a-discover-all http://localhost:4000 --key ***  # explicit key
 ```
 
 ### Send a Task
@@ -72,15 +81,16 @@ No build step required. Pi uses [jiti](https://github.com/unjs/jiti) to load Typ
 |---|---|
 | `/a2a-discover <url>` | Discover an A2A agent at a URL |
 | `/a2a-agents` | List all discovered agents |
+| `/a2a-discover-all <gateway-url> [--key <api-key>]` | Batch discover all agents from LiteLLM Gateway |
 | `/a2a-send <agent> <message>` | Send a task — `<agent>` can be name, URL, or list number (waits for result) |
 | `/a2a-send-async <agent> <msg>` | Send a task asynchronously (returns immediately, notifies on completion) |
 | `/a2a-pending` | List pending async tasks |
 | `/a2a-broadcast <msg> --agents <urls>` | Broadcast to multiple agents in parallel |
 | `/a2a-chain <agent1> <task1> \| <agent2> <task2>` | Chain tasks sequentially (`{previous}` placeholder) |
-| `/a2a-status <task-id> <agent-url>` | Get task status |
-| `/a2a-cancel <task-id> <agent-url>` | Cancel a task |
+| `/a2a-status <task-id> [agent-url]` | Get task status (auto-finds agent if submitted locally) |
+| `/a2a-cancel <task-id> [agent-url]` | Cancel a task (auto-finds agent if submitted locally) |
 | `/a2a-list <agent-url> [context-id]` | List tasks on a remote agent |
-| `/a2a-resubscribe <task-id> <agent-url>` | Resubscribe to a task's event stream |
+| `/a2a-resubscribe <task-id> [agent-url]` | Resubscribe to a task's event stream |
 | `/a2a-config <key> <value>` | Configure timeout, retries, cache TTL, auth, etc. |
 | `/a2a-help` | Show help |
 
@@ -96,18 +106,19 @@ This client implements the A2A protocol wire format as used by [fasta2a v0.6.1](
 | Feature | Implementation |
 |---|---|
 | JSON-RPC methods | `message/send`, `message/stream`, `tasks/get`, `tasks/cancel`, `tasks/list`, `tasks/resubscribe`, `tasks/pushNotification/*` |
-| Dispatch endpoint | `POST /` (unified JSON-RPC) |
-| Agent Card | `GET /.well-known/agent-card.json` |
+| Dispatch endpoint | `POST /` (uses `agent.url` as-is for proxy-compatible paths) |
+| Agent Card | `GET /.well-known/agent-card.json` (fallback to `/.well-known/agent.json` for LiteLLM) |
 | Part types | discriminated union via `kind` (`"text"`, `"file"`, `"data"`) |
 | SSE events | JSON-RPC envelope with `result.kind` (`"task"`, `"status-update"`, `"artifact-update"`) |
 | Task states | `submitted`, `working`, `inputRequired`, `completed`, `failed`, `canceled`, `rejected` |
+| Response shapes | wrapped `{ task }`, direct task `{ id, status }`, direct message `{ role, parts }` |
 
 ## Project Structure
 
 ```
 pi-a2a-adaptor/
 ├── src/
-│   ├── client.ts          # A2AClient core (HTTP, SSE, polling)
+│   ├── client.ts          # A2AClient core (HTTP, SSE, polling, auth, gateway)
 │   ├── registry.ts        # AgentRegistry with TTL caching
 │   ├── task-manager.ts    # TaskManager (chain / parallel)
 │   ├── types.ts           # Full A2A type definitions
@@ -115,11 +126,11 @@ pi-a2a-adaptor/
 ├── pi-extension/
 │   └── index.ts           # pi extension entry (commands + tools)
 └── tests/
-    ├── a2a-client.test.ts        # 60 protocol-level tests
-    ├── a2a-extension.test.ts     # 12 extension/command tests
+    ├── a2a-client.test.ts        # 73 protocol-level tests (incl. 10 auth e2e)
+    ├── a2a-extension.test.ts     # 22 extension/command tests
     ├── a2a-multi-shape.test.ts   # 8 multi-shape response tests
     └── strict-server/
-        └── strict_server.py      # 3-port schema-strict mock server
+        └── strict_server.py      # 4-port schema-strict mock server (9996-9999, port 9999 = auth)
 ```
 
 ## Testing
@@ -129,7 +140,7 @@ npm install
 npx vitest run
 ```
 
-The test suite runs **80 tests across 3 test files** against a schema-strict mock server that implements the fasta2a wire format, covering:
+The test suite runs **103 tests across 3 test files** against a schema-strict mock server that implements the fasta2a wire format, covering:
 
 - Agent Card discovery
 - `message/send` (sync and async with polling)
@@ -141,25 +152,30 @@ The test suite runs **80 tests across 3 test files** against a schema-strict moc
 - Long-running task polling with timeout
 - Error code handling
 - **Multi-shape response handling** (wrapped, direct-task, direct-message)
-- **Extension command patterns** (send-async, chain, parallel, text extraction)
+- **Extension command patterns** (send-async, chain, parallel, broadcast, status, cancel, list, resubscribe, short ID lookup)
+- **Auth-required server e2e** (no token → 401, wrong token → 401, valid bearer/API key → 200 across all methods)
 
 ## Configuration
 
 Edit `~/.pi/agent/settings.json` or use `/a2a-config` at runtime:
 
 ```bash
+# General
 /a2a-config timeout 60000
 /a2a-config retryAttempts 3
 /a2a-config cacheTtl 300000
 /a2a-config verifySsl true
 
-# Bearer Token auth
+# Auth (Bearer Token)
 /a2a-config defaultScheme bearer
 /a2a-config bearerToken "your-token-here"
 
-# API Key auth
+# Auth (API Key)
 /a2a-config defaultScheme apiKey
 /a2a-config apiKey "your-api-key"
+
+# LiteLLM Gateway (after setting bearerToken)
+/a2a-discover-all http://localhost:4000
 
 # Disable auth
 /a2a-config defaultScheme none
