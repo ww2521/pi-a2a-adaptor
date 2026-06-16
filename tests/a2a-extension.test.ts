@@ -380,4 +380,19 @@ describe("E13: LiteLLM Gateway batch discovery", () => {
     expect(agent).toHaveProperty("name");
     expect(agent).toHaveProperty("url");
   });
+
+  it("[E13-04] discovered agent is added to registry", async () => {
+    // Simulate /a2a-discover-all flow: discoverAgentFromGateway + registry.add
+    const agents = await client.listGatewayAgents(GATEWAY_URL, "test-token-123");
+    const ref = agents[0].name || agents[0].agent_name;
+    const agent = await client.discoverAgentFromGateway(GATEWAY_URL, ref);
+    registry.add(agent);
+    // Verify it shows up in list
+    const listed = registry.list();
+    expect(listed.some((a) => a.url === agent.url)).toBe(true);
+    // Verify lookup by name works
+    const found = registry.lookup(agent.name);
+    expect(found).not.toBeNull();
+    expect(found!.url).toBe(agent.url);
+  });
 });

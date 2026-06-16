@@ -22,6 +22,10 @@ export class AgentRegistry {
     return card;
   }
 
+  add(agent: RemoteAgent): void {
+    this.registry.set(agent.url, { agent, cachedAt: Date.now() });
+  }
+
   lookup(ref: string): RemoteAgent | null {
     const cached = this.registry.get(ref);
     if (cached) return cached.agent;

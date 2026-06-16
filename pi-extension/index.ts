@@ -232,6 +232,7 @@ export default function (pi: ExtensionAPI) {
           try {
             const ref = ga.name || ga.agent_name || ga.agent_id;
             const agent = await a2aClient!.discoverAgentFromGateway(gatewayUrl, ref);
+            registry!.add(agent);
             discovered.push(`${agent.name} (${agent.url}) - ${agent.skills.length} skills`);
             ctx.ui?.notify?.(`Discovered: ${agent.name}`, "info");
           } catch (err: any) {
