@@ -68,7 +68,14 @@ function saveConfig(cfg: A2AConfig): void {
 function loadAgents(): PersistedAgent[] {
   try {
     if (fs.existsSync(AGENTS_FILE)) {
-      return JSON.parse(fs.readFileSync(AGENTS_FILE, "utf-8"));
+      const raw = JSON.parse(fs.readFileSync(AGENTS_FILE, "utf-8"));
+      // Handle old format: was RemoteAgent[], now PersistedAgent[]
+      if (Array.isArray(raw) && raw.length > 0 && raw[0].agent) {
+        return raw as PersistedAgent[];
+      }
+      if (Array.isArray(raw) && raw.length > 0 && raw[0].url) {
+        return raw.map((a: any) => ({ agent: a, lastVerified: a.discoveredAt || Date.now() })) as PersistedAgent[];
+      }
     }
   } catch { /* ignore */ }
   return [];
