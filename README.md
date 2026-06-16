@@ -21,16 +21,15 @@ Inspired by [pi-a2a-communication](https://github.com/DrOlu/pi-a2a-communication
 
 ## Quick Start
 
-### Install as pi Extension
+### Install
 
 ```bash
-# Clone into pi's global extensions directory
-git clone https://github.com/ww2521/pi-a2a-adaptor.git ~/.pi/agent/extensions/pi-a2a-adaptor
+pi install npm:pi-a2a-adaptor
 ```
 
-> **No build step required.** pi uses [jiti](https://github.com/unjs/jiti) to load TypeScript directly.
+No build step required. Pi uses [jiti](https://github.com/unjs/jiti) to load TypeScript directly.
 
-### Reload pi
+### Reload Pi
 
 ```
 /reload
@@ -66,7 +65,7 @@ git clone https://github.com/ww2521/pi-a2a-adaptor.git ~/.pi/agent/extensions/pi
 |---|---|
 | `/a2a-discover <url>` | Discover an A2A agent at a URL |
 | `/a2a-agents` | List all discovered agents |
-| `/a2a-send <agent> <message>` | Send a task to an agent (auto-polls for completion) |
+| `/a2a-send <agent> <message>` | Send a task to an agent — `<agent>` can be name, URL, or list number from `/a2a-agents` (auto-polls for completion) |
 | `/a2a-broadcast <msg> --agents <urls>` | Broadcast to multiple agents in parallel |
 | `/a2a-chain <agent1> <task1> \| <agent2> <task2>` | Chain tasks sequentially (`{previous}` placeholder) |
 | `/a2a-status <task-id> <agent-url>` | Get task status |
