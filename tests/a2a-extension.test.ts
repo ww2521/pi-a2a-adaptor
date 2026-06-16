@@ -396,3 +396,55 @@ describe("E13: LiteLLM Gateway batch discovery", () => {
     expect(found!.url).toBe(agent.url);
   });
 });
+
+// ═══════════════════════════════════════════
+// E14: /a2a-refresh — agent verification
+// ═══════════════════════════════════════════
+describe("E14: Agent verification and refresh", () => {
+  it("[E14-01] registry.add sets lastVerified timestamp", async () => {
+    const reg = new AgentRegistry(300000);
+    const agent = await client.discoverAgent(BASE_URL);
+    reg.add(agent);
+    // lastVerified should be recent
+    const list = reg.list();
+    expect(list.length).toBe(1);
+  });
+
+  it("[E14-02] verifyAll returns reachable agents", async () => {
+    const reg = new AgentRegistry(300000);
+    const agent = await client.discoverAgent(BASE_URL);
+    reg.add(agent);
+    const { ok, stale } = await reg.verifyAll(client);
+    expect(ok.length).toBe(1);
+    expect(stale.length).toBe(0);
+    expect(reg.list().length).toBe(1);
+  });
+
+  it("[E14-03] verifyAll removes stale agents", async () => {
+    const reg = new AgentRegistry(300000);
+    const goodAgent = await client.discoverAgent(BASE_URL);
+    reg.add(goodAgent);
+    // Add a fake unreachable agent
+    const badAgent = {
+      name: "Bad Agent",
+      url: "http://127.0.0.1:19999",
+      description: "",
+      version: "1.0.0",
+      capabilities: {},
+      skills: [],
+      defaultInputModes: ["application/json"],
+      defaultOutputModes: ["application/json"],
+      discoveredAt: Date.now(),
+    } as RemoteAgent;
+    reg.add(badAgent);
+
+    expect(reg.list().length).toBe(2);
+    const { ok, stale } = await reg.verifyAll(client);
+    expect(ok.length).toBe(1);
+    expect(stale.length).toBe(1);
+    expect(stale[0]).toBe("http://127.0.0.1:19999");
+    // Stale agent should be removed
+    expect(reg.list().length).toBe(1);
+    expect(reg.list()[0].url).toBe(BASE_URL);
+  });
+});
