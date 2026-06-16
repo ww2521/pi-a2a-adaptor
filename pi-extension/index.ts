@@ -127,6 +127,10 @@ const DEFAULT_CONFIG: A2AConfig = {
     defaultScheme: "none",
     verifySsl: true,
   },
+  taskDefaults: {
+    sendTimeout: 120000,
+    sendAsyncTimeout: 30000,
+  },
 };
 
 // ─── Helpers ───
@@ -211,6 +215,8 @@ export default function (pi: ExtensionAPI) {
     if (saved.security?.verifySsl !== undefined) config.security.verifySsl = saved.security!.verifySsl;
     if (saved.security?.bearerToken !== undefined) config.security.bearerToken = saved.security!.bearerToken;
     if (saved.security?.apiKey !== undefined) config.security.apiKey = saved.security!.apiKey;
+    if (saved.taskDefaults?.sendTimeout !== undefined) config.taskDefaults.sendTimeout = saved.taskDefaults!.sendTimeout;
+    if (saved.taskDefaults?.sendAsyncTimeout !== undefined) config.taskDefaults.sendAsyncTimeout = saved.taskDefaults!.sendAsyncTimeout;
 
     // Load persisted gateways
     const savedGateways = loadGateways();
@@ -419,7 +425,8 @@ export default function (pi: ExtensionAPI) {
         const agent = resolveAgent(agentRef);
         ctx.ui?.notify?.(`Sending to ${agent.name}...`, "info");
         const result = await taskManager!.sendTask(agent, message, {
-          polling: { intervalMs: 2000, maxAttempts: 60, timeoutMs: 120000 },
+          timeout: config!.taskDefaults.sendTimeout,
+          polling: { intervalMs: 2000, maxAttempts: 60, timeoutMs: config!.taskDefaults.sendTimeout },
         });
         const text = extractTextFromResult(result);
         recordTask((result as any).id, agent, message);
@@ -445,7 +452,7 @@ export default function (pi: ExtensionAPI) {
       const message = parts.slice(1).join(" ");
       try {
         const agent = resolveAgent(agentRef);
-        const result = await taskManager!.sendTask(agent, message, { timeout: 30000 });
+        const result = await taskManager!.sendTask(agent, message, { timeout: config!.taskDefaults.sendAsyncTimeout });
 
         if (!result || !(result as any).id || !(result as any).status) {
           const text = extractTextFromResult(result as any);
@@ -735,7 +742,7 @@ export default function (pi: ExtensionAPI) {
     handler: async (args, ctx) => {
       const parts = args.trim().split(/\s+/);
       if (parts.length < 2) {
-        ctx.ui?.notify?.("Usage: /a2a-config <key> <value>\nKeys: timeout, retryAttempts, cacheTtl, verifySsl, defaultScheme, bearerToken, apiKey", "warning");
+        ctx.ui?.notify?.("Usage: /a2a-config <key> <value>\nKeys: timeout, retryAttempts, cacheTtl, verifySsl, defaultScheme, bearerToken, apiKey, sendTimeout, sendAsyncTimeout", "warning");
         return;
       }
       const key = parts[0];
@@ -767,6 +774,12 @@ export default function (pi: ExtensionAPI) {
             break;
           case "apiKey":
             config.security.apiKey = value;
+            break;
+          case "sendTimeout":
+            config.taskDefaults.sendTimeout = parseInt(value, 10);
+            break;
+          case "sendAsyncTimeout":
+            config.taskDefaults.sendAsyncTimeout = parseInt(value, 10);
             break;
           default:
             ctx.ui?.notify?.(`Unknown key: ${key}`, "error");
@@ -811,7 +824,8 @@ Task Management:
 Configuration:
   /a2a-config <key> <value>     - Configure settings
                                 Keys: timeout, retryAttempts, cacheTtl, verifySsl,
-                                defaultScheme (none|bearer|apiKey), bearerToken, apiKey
+                                defaultScheme (none|bearer|apiKey), bearerToken, apiKey,
+                                sendTimeout, sendAsyncTimeout
   /a2a-help                     - Show this help
 
 Examples:

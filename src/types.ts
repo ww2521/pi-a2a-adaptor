@@ -255,11 +255,17 @@ export interface A2AClientOptions {
   protocol?: "a2a-v1" | "pi-legacy";
 }
 
+export interface TaskDefaults {
+  sendTimeout: number;      // /a2a-send timeout (default 120000)
+  sendAsyncTimeout: number; // /a2a-send-async initial submit timeout (default 30000)
+}
+
 export interface A2AConfig {
   client: ClientConfig;
   server: ServerConfig;
   discovery: DiscoveryConfig;
   security: SecurityConfig;
+  taskDefaults: TaskDefaults;
 }
 
 export interface ServerConfig {
@@ -281,13 +287,6 @@ export interface DiscoveryConfig {
   cacheEnabled: boolean;
   cacheTtl: number;
   agentCardPath: string;
-}
-
-export interface A2AConfig {
-  client: ClientConfig;
-  server: ServerConfig;
-  discovery: DiscoveryConfig;
-  security: SecurityConfig;
 }
 
 export interface SecurityConfig {
