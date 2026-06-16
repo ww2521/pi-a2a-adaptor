@@ -661,15 +661,19 @@ Configuration:
 
 Examples:
   /a2a-discover https://agent.example.com
+  /a2a-discover-all http://localhost:4000 --key sk-1234567890abcdef
+  /a2a-config defaultScheme bearer
+  /a2a-config bearerToken sk-1234567890abcdef
+  /a2a-discover-all http://localhost:4000
+  /a2a-agents
+  /a2a-send 1 "Analyze this code"        # use list number
   /a2a-send https://agent.example.com "Analyze this code"
   /a2a-send-async https://agent.example.com "Long task"
   /a2a-pending
   /a2a-status abc-123            # auto-finds agent
-  /a2a-status abc-123 https://x  # explicit URL
+  /a2a-cancel abc-123            # auto-finds agent
   /a2a-broadcast "Check security" --agents https://agent1.com,https://agent2.com
   /a2a-chain scout "find bugs" | worker "fix {previous}"
-  /a2a-config defaultScheme bearer
-  /a2a-config bearerToken "your-token-here"
   /a2a-config timeout 60000
       `.trim();
       ctx.ui?.notify?.(help, "info");
