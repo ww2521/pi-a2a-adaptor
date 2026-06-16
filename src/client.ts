@@ -222,6 +222,27 @@ export class A2AClient {
     this.pendingStreams.clear();
   }
 
+  // ─── LiteLLM Gateway ───
+
+  /**
+   * Fetch agents from LiteLLM Gateway /v1/agents endpoint.
+   * Returns array of { agent_id, agent_name, agent_card_params, litellm_params, ... }
+   */
+  async listGatewayAgents(gatewayUrl: string, apiKey: string): Promise<any[]> {
+    const url = `${gatewayUrl.replace(/\/$/, '')}/v1/agents`;
+    const res = await this.httpGet(url, { Authorization: `Bearer ${apiKey}` });
+    return Array.isArray(res) ? res : [];
+  }
+
+  /**
+   * Discover an agent registered in LiteLLM Gateway by agent name or ID.
+   * Uses /a2a/{agent_id}/.well-known/agent-card.json (standard path).
+   */
+  async discoverAgentFromGateway(gatewayUrl: string, agentRef: string): Promise<RemoteAgent> {
+    const base = gatewayUrl.replace(/\/$/, '');
+    return this.discoverAgent(`${base}/a2a/${agentRef}`);
+  }
+
   // ─── Private Helpers ───
 
   private readonly TERMINAL_STATES = TERMINAL_STATES;
@@ -324,12 +345,12 @@ export class A2AClient {
     });
   }
 
-  private async httpGet(url: string): Promise<unknown> {
+  private async httpGet(url: string, extraHeaders?: Record<string, string>): Promise<unknown> {
     return new Promise((resolve, reject) => {
       const parsed = new URL(url);
       const req = this.httpMod(url).request({
         hostname: parsed.hostname, port: parsed.port, path: parsed.pathname, method: "GET",
-        headers: { ...this.buildAuthHeaders() }, timeout: this.config.timeout,
+        headers: { ...this.buildAuthHeaders(), ...extraHeaders }, timeout: this.config.timeout,
       }, (res: http.IncomingMessage) => {
         let data = "";
         res.on("data", (chunk: string) => (data += chunk));

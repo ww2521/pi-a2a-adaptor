@@ -201,6 +201,47 @@ export default function (pi: ExtensionAPI) {
   });
 
   /**
+   * /a2a-discover-all <gateway-url> --key <api-key>
+   */
+  pi.registerCommand("a2a-discover-all", {
+    description: "Discover all agents from a LiteLLM Gateway",
+    handler: async (args, ctx) => {
+      const gatewayMatch = args.match(/^(\S+)\s+--key\s+(\S+)$/);
+      if (!gatewayMatch) {
+        ctx.ui?.notify?.("Usage: /a2a-discover-all <gateway-url> --key <api-key>", "warning");
+        return;
+      }
+      const gatewayUrl = gatewayMatch[1];
+      const apiKey = gatewayMatch[2];
+      try {
+        ctx.ui?.notify?.("Fetching agents from gateway...", "info");
+        const gatewayAgents = await a2aClient!.listGatewayAgents(gatewayUrl, apiKey);
+        if (gatewayAgents.length === 0) {
+          ctx.ui?.notify?.("No agents found in gateway", "info");
+          return;
+        }
+        const discovered: string[] = [];
+        const failed: string[] = [];
+        for (const ga of gatewayAgents) {
+          try {
+            const ref = ga.agent_name || ga.agent_id;
+            const agent = await a2aClient!.discoverAgentFromGateway(gatewayUrl, ref);
+            discovered.push(`${agent.name} (${agent.url}) - ${agent.skills.length} skills`);
+            ctx.ui?.notify?.(`Discovered: ${agent.name}`, "info");
+          } catch (err: any) {
+            failed.push(`${ga.agent_name || ga.agent_id}: ${err.message}`);
+          }
+        }
+        let summary = `Discovered ${discovered.length}/${gatewayAgents.length} agents:\n${discovered.join("\n")}`;
+        if (failed.length > 0) summary += `\n\nFailed ${failed.length}:\n${failed.join("\n")}`;
+        ctx.ui?.notify?.(summary, "success");
+      } catch (err: any) {
+        ctx.ui?.notify?.(`Gateway discovery failed: ${err.message}`, "error");
+      }
+    },
+  });
+
+  /**
    * /a2a-send <agent-ref> <message>
    */
   pi.registerCommand("a2a-send", {
@@ -592,6 +633,7 @@ A2A Adaptor Commands:
 Discovery:
   /a2a-discover <url>           - Discover agent at URL
   /a2a-agents                   - List discovered agents
+  /a2a-discover-all <url> --key <api-key>  - Discover all agents from LiteLLM Gateway
 
 Task Management:
   /a2a-send <agent> <message>   - Send task (waits for result)
