@@ -1,9 +1,15 @@
 {
   "name": "pi-a2a-adaptor",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "A2A extension for Pi — `pi install npm:pi-a2a-adaptor`, then `/a2a-send` by name, URL, or agent number",
   "type": "module",
   "main": "src/index.js",
+  "license": "MIT",
+  "homepage": "https://github.com/ww2521/pi-a2a-adaptor#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ww2521/pi-a2a-adaptor.git"
+  },
   "keywords": [
     "pi-package",
     "a2a",
