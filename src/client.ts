@@ -75,15 +75,35 @@ export class A2AClient {
     const response = await this.httpPostJSON(agent, request, options);
     if (response.error) throw A2AError.fromResponse(response);
 
-    const result = response.result as { task?: A2ATask; message?: Message } | undefined;
-    if (result?.task) {
-      if (!TERMINAL_STATES.has(result.task.status.state) && options.polling) {
-        return this.waitForTask(agent, result.task.id, options.polling);
+    const raw = response.result as unknown;
+
+    // Shape 1: { task: A2ATask }
+    if (raw && typeof raw === "object" && "task" in raw) {
+      const wrapped = raw as { task?: A2ATask; message?: Message };
+      if (wrapped.task) {
+        if (!TERMINAL_STATES.has(wrapped.task.status.state) && options.polling) {
+          return this.waitForTask(agent, wrapped.task.id, options.polling);
+        }
+        return wrapped.task;
       }
-      return result.task;
+      if (wrapped.message) return wrapped.message;
     }
-    if (result?.message) return result.message;
-    throw new A2AError(JSONRPCErrorCode.InvalidAgentResponse, "Invalid response: no task or message");
+
+    // Shape 2: direct A2ATask (status + id present)
+    if (raw && typeof raw === "object" && "status" in raw && "id" in raw) {
+      const task = raw as A2ATask;
+      if (!TERMINAL_STATES.has(task.status.state) && options.polling) {
+        return this.waitForTask(agent, task.id, options.polling);
+      }
+      return task;
+    }
+
+    // Shape 3: direct Message (role + parts present)
+    if (raw && typeof raw === "object" && "role" in raw && "parts" in raw) {
+      return raw as Message;
+    }
+
+    throw new A2AError(JSONRPCErrorCode.InvalidAgentResponse, "Invalid response: no task or message\nRaw: " + JSON.stringify(raw).slice(0, 500));
   }
 
   async sendStreamingMessage(
