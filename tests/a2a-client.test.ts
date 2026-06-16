@@ -515,3 +515,38 @@ describe("G13: 长任务轮询 + 超时", () => {
     }
   }, 8000);
 });
+
+// ═══════════════════════════════════════════
+// G12: Bearer Token / API Key Auth
+// ═══════════════════════════════════════════
+describe("G12: Auth headers", () => {
+  it("[61] Bearer token client initializes and works", async () => {
+    const authClient = new A2AClient(
+      { timeout: 5000, retryAttempts: 0, retryDelay: 0, maxConcurrentTasks: 10, streamingEnabled: true },
+      { defaultScheme: "bearer", bearerToken: "test-bearer-123", verifySsl: true },
+    );
+    const card = await authClient.discoverAgent(BASE_URL);
+    expect(card).toHaveProperty("name");
+    authClient.cancelAll();
+  });
+
+  it("[62] None scheme client works without auth", async () => {
+    const noneClient = new A2AClient(
+      { timeout: 5000, retryAttempts: 0, retryDelay: 0, maxConcurrentTasks: 10, streamingEnabled: true },
+      { defaultScheme: "none", verifySsl: true },
+    );
+    const card = await noneClient.discoverAgent(BASE_URL);
+    expect(card).toHaveProperty("name");
+    noneClient.cancelAll();
+  });
+
+  it("[63] API key scheme client works", async () => {
+    const keyClient = new A2AClient(
+      { timeout: 5000, retryAttempts: 0, retryDelay: 0, maxConcurrentTasks: 10, streamingEnabled: true },
+      { defaultScheme: "apiKey", apiKey: "test-key-456", verifySsl: true },
+    );
+    const card = await keyClient.discoverAgent(BASE_URL);
+    expect(card).toHaveProperty("name");
+    keyClient.cancelAll();
+  });
+});

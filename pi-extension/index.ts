@@ -533,7 +533,7 @@ export default function (pi: ExtensionAPI) {
     handler: async (args, ctx) => {
       const parts = args.trim().split(/\s+/);
       if (parts.length < 2) {
-        ctx.ui?.notify?.("Usage: /a2a-config <key> <value>\nKeys: timeout, retryAttempts, cacheTtl, verifySsl", "warning");
+        ctx.ui?.notify?.("Usage: /a2a-config <key> <value>\nKeys: timeout, retryAttempts, cacheTtl, verifySsl, defaultScheme, bearerToken, apiKey", "warning");
         return;
       }
       const key = parts[0];
@@ -552,6 +552,19 @@ export default function (pi: ExtensionAPI) {
             break;
           case "verifySsl":
             config.security.verifySsl = value.toLowerCase() === "true";
+            break;
+          case "defaultScheme":
+            if (!["none", "bearer", "apiKey", "oauth2"].includes(value)) {
+              ctx.ui?.notify?.(`Invalid scheme: ${value}. Must be: none, bearer, apiKey, oauth2`, "error");
+              return;
+            }
+            config.security.defaultScheme = value as any;
+            break;
+          case "bearerToken":
+            config.security.bearerToken = value;
+            break;
+          case "apiKey":
+            config.security.apiKey = value;
             break;
           default:
             ctx.ui?.notify?.(`Unknown key: ${key}`, "error");
@@ -593,6 +606,8 @@ Task Management:
 
 Configuration:
   /a2a-config <key> <value>     - Configure settings
+                                Keys: timeout, retryAttempts, cacheTtl, verifySsl,
+                                defaultScheme (none|bearer|apiKey), bearerToken, apiKey
   /a2a-help                     - Show this help
 
 Examples:
@@ -604,6 +619,8 @@ Examples:
   /a2a-status abc-123 https://x  # explicit URL
   /a2a-broadcast "Check security" --agents https://agent1.com,https://agent2.com
   /a2a-chain scout "find bugs" | worker "fix {previous}"
+  /a2a-config defaultScheme bearer
+  /a2a-config bearerToken "your-token-here"
   /a2a-config timeout 60000
       `.trim();
       ctx.ui?.notify?.(help, "info");
