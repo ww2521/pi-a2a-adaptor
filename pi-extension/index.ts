@@ -445,7 +445,7 @@ export default function (pi: ExtensionAPI) {
       const message = parts.slice(1).join(" ");
       try {
         const agent = resolveAgent(agentRef);
-        const result = await taskManager!.sendTask(agent, message, { timeout: 5000 });
+        const result = await taskManager!.sendTask(agent, message, { timeout: 30000 });
 
         if (!result || !(result as any).id || !(result as any).status) {
           const text = extractTextFromResult(result as any);
