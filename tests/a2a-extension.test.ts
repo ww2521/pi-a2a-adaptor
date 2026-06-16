@@ -34,6 +34,22 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function extractTextFromResult(task: any): string {
+  if (task.artifacts && task.artifacts.length > 0) {
+    return task.artifacts[0].parts
+      .filter((p: any) => p.kind === "text" && p.text)
+      .map((p: any) => p.text)
+      .join("\n");
+  }
+  if (task.status?.message?.parts) {
+    return task.status.message.parts
+      .filter((p: any) => p.kind === "text" && p.text)
+      .map((p: any) => p.text)
+      .join("\n");
+  }
+  return `Task ${task.id}: ${task.status?.state}`;
+}
+
 beforeAll(async () => {
   client = new A2AClient(
     { timeout: 10000, retryAttempts: 0, retryDelay: 0, maxConcurrentTasks: 10, streamingEnabled: true },
@@ -137,24 +153,9 @@ describe("E3: Response shape handling", () => {
 });
 
 // ═══════════════════════════════════════════
-// E4: Task result extraction (same as extractTextFromResult in extension)
+// E4: Task result extraction (uses module-level extractTextFromResult)
 // ═══════════════════════════════════════════
 describe("E4: Task result extraction", () => {
-  function extractTextFromResult(task: any): string {
-    if (task.artifacts && task.artifacts.length > 0) {
-      return task.artifacts[0].parts
-        .filter((p: any) => p.kind === "text" && p.text)
-        .map((p: any) => p.text)
-        .join("\n");
-    }
-    if (task.status?.message?.parts) {
-      return task.status.message.parts
-        .filter((p: any) => p.kind === "text" && p.text)
-        .map((p: any) => p.text)
-        .join("\n");
-    }
-    return `Task ${task.id}: ${task.status?.state}`;
-  }
 
   it("[E4-01] Extract text from completed task artifacts", async () => {
     const result = await taskManager.sendTask(agent, "extract test hello", {
@@ -172,5 +173,61 @@ describe("E4: Task result extraction", () => {
     const text = extractTextFromResult(result);
     // Should either have the echo text or the task state
     expect(text.length).toBeGreaterThan(0);
+  });
+});
+
+// ═══════════════════════════════════════════
+// E5: /a2a-chain — sequential tasks with {previous}
+// ═══════════════════════════════════════════
+describe("E5: /a2a-chain sequential tasks", () => {
+  it("[E5-01] sendChainTasks echoes first step", async () => {
+    const steps = [
+      { agent, message: "chain step one" },
+    ];
+    const result = await taskManager.sendChainTasks(steps);
+    expect(result.status.state).toBe("completed");
+    const text = extractTextFromResult(result);
+    expect(text).toContain("chain step one");
+  });
+
+  it("[E5-02] sendChainTasks {previous} replacement", async () => {
+    // Chain: step1 echoes "first", step2 gets "Echo: first" as {previous}
+    const steps = [
+      { agent, message: "first" },
+      { agent, message: "previous was: {previous}" },
+    ];
+    const result = await taskManager.sendChainTasks(steps);
+    expect(result.status.state).toBe("completed");
+    const text = extractTextFromResult(result);
+    // Second step receives step1's output
+    expect(text).toContain("Echo: first");
+  });
+});
+
+// ═══════════════════════════════════════════
+// E6: a2a_parallel tool — parallel execution
+// ═══════════════════════════════════════════
+describe("E6: a2a_parallel tool pattern", () => {
+  it("[E6-01] sendParallelTasks with single agent", async () => {
+    const steps = [{ agent, message: "parallel single", options: { timeout: 15000 } }];
+    const results = await taskManager.sendParallelTasks(steps);
+    expect(results.length).toBe(1);
+    expect(results[0].status.state).toBe("completed");
+    const text = extractTextFromResult(results[0]);
+    expect(text).toContain("parallel single");
+  });
+
+  it("[E6-02] sendParallelTasks with same agent twice", async () => {
+    // Simulate what a2a_parallel tool does: multiple agents, same message
+    const steps = [
+      { agent, message: "parallel dup", options: { timeout: 15000 } },
+      { agent, message: "parallel dup", options: { timeout: 15000 } },
+    ];
+    const results = await taskManager.sendParallelTasks(steps);
+    expect(results.length).toBe(2);
+    for (const r of results) {
+      expect(r.status.state).toBe("completed");
+      expect(extractTextFromResult(r)).toContain("parallel dup");
+    }
   });
 });

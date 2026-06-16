@@ -2,6 +2,11 @@
 """
 strict-server.py — Schema-strict A2A test server for e2e testing.
 Validates all incoming requests against fasta2a v0.6.1 pydantic schema.
+
+Runs three response shape variants on different ports:
+  - 9996: wrapped shape   (default) { result: { kind: "task", task: {...} } }
+  - 9997: direct-task     { result: { id, status, ... } }
+  - 9998: direct-message  { result: { role, parts, messageId } }
 """
 import uuid
 import asyncio
@@ -82,12 +87,6 @@ class ListTasksParams(BaseModel):
     status: Optional[str] = None
     pageSize: Optional[int] = None
 
-class PushNotificationConfig(BaseModel):
-    id: Optional[str] = None
-    taskId: Optional[str] = None
-    url: str
-    token: Optional[str] = None
-
 class PushSetParams(BaseModel):
     taskId: str
     url: str
@@ -146,16 +145,13 @@ def make_jsonrpc_response(request_id, result=None, error=None):
         resp["result"] = result
     return resp
 
-def sse(data):
-    return f"data: {json.dumps(data)}\n\n"
-
 # ─── Handlers ───
 
-async def handle_agent_card(request: Request):
-    return Response(content=json.dumps({
+def make_agent_card_response(port):
+    return json.dumps({
         "name": "Strict A2A Server",
-        "description": "Schema-strict A2A test server (matches fasta2a v0.6.1)",
-        "url": f"http://127.0.0.1:{PORT}",
+        "description": f"Schema-strict A2A test server on port {port}",
+        "url": f"http://127.0.0.1:{port}",
         "version": "1.0.0",
         "defaultInputModes": ["application/json"],
         "defaultOutputModes": ["application/json"],
@@ -164,7 +160,16 @@ async def handle_agent_card(request: Request):
             {"id": "echo", "name": "Echo", "description": "Echo back", "tags": ["test"]},
             {"id": "delay", "name": "Delay", "description": "Simulate delay", "tags": ["test", "delay"]},
         ],
-    }), media_type="application/json")
+    })
+
+async def handle_agent_card_wrapped(request: Request):
+    return Response(content=make_agent_card_response(9996), media_type="application/json")
+
+async def handle_agent_card_direct_task(request: Request):
+    return Response(content=make_agent_card_response(9997), media_type="application/json")
+
+async def handle_agent_card_direct_msg(request: Request):
+    return Response(content=make_agent_card_response(9998), media_type="application/json")
 
 def validate_params(model, params):
     try:
@@ -173,7 +178,16 @@ def validate_params(model, params):
     except Exception as e:
         return {"code": -32602, "message": f"Invalid params: {e}"}
 
-async def handle_dispatch(request: Request):
+async def handle_dispatch_wrapped(request: Request):
+    return await _handle_dispatch(request, "wrapped")
+
+async def handle_dispatch_direct_task(request: Request):
+    return await _handle_dispatch(request, "direct-task")
+
+async def handle_dispatch_direct_msg(request: Request):
+    return await _handle_dispatch(request, "direct-message")
+
+async def _handle_dispatch(request: Request, shape: str):
     body = await request.json()
     request_id = body.get("id")
     method = body.get("method")
@@ -208,15 +222,34 @@ async def handle_dispatch(request: Request):
             media_type="application/json", status_code=200,
         )
 
-    return await handler(request_id, params)
+    return await handler(request_id, params, shape)
 
-async def _handle_send(request_id, params):
+def _build_send_result(request_id, task, shape):
+    if shape == "wrapped":
+        return make_jsonrpc_response(request_id, result={"kind": "task", "task": task})
+    elif shape == "direct-task":
+        return make_jsonrpc_response(request_id, result=dict(task))
+    elif shape == "direct-message":
+        artifact_text = ""
+        if task.get("artifacts"):
+            for art in task.get("artifacts", []):
+                for p in art.get("parts", []):
+                    if p.get("kind") == "text":
+                        artifact_text = p["text"]
+        return make_jsonrpc_response(request_id, result={
+            "role": "agent",
+            "kind": "message",
+            "parts": [{"kind": "text", "text": artifact_text or "Echo: ok"}],
+            "messageId": f"reply-{task['id']}",
+        })
+    return make_jsonrpc_response(request_id, result={"kind": "task", "task": task})
+
+async def _handle_send(request_id, params, shape):
     msg = params["message"]
     context_id = msg.get("contextId")
     task = make_task(msg, context_id)
     user_text = echo_parts(msg.get("parts", []))
 
-    # Check for delay:X pattern
     if user_text.startswith("delay:"):
         try:
             delay_secs = int(user_text.split(":")[1].strip())
@@ -227,45 +260,44 @@ async def _handle_send(request_id, params):
         complete_task(task["id"], user_text)
 
     return Response(
-        content=json.dumps(make_jsonrpc_response(request_id, result={"kind": "task", "task": task})),
+        content=json.dumps(_build_send_result(request_id, task, shape)),
         media_type="application/json",
     )
 
-async def _handle_stream(request_id, params):
+async def _handle_stream(request_id, params, shape):
     msg = params["message"]
     context_id = msg.get("contextId") or str(uuid.uuid4())
     task = make_task(msg, context_id)
     user_text = echo_parts(msg.get("parts", []))
 
+    def sse(data):
+        return f"data: {json.dumps(data)}\n\n"
+
     async def events():
         yield sse(make_jsonrpc_response(request_id, result={"kind": "task", "task": dict(task)}))
-
         task["status"]["state"] = "working"
         task["status"]["timestamp"] = datetime.now(timezone.utc).isoformat()
         yield sse(make_jsonrpc_response(request_id, result={
             "kind": "status-update", "taskId": task["id"], "contextId": task["contextId"],
             "status": task["status"], "final": False,
         }))
-
         artifact = {"artifactId": str(uuid.uuid4()), "parts": [{"kind": "text", "text": f"Echo: {user_text}"}]}
         task["artifacts"] = [artifact]
         yield sse(make_jsonrpc_response(request_id, result={
             "kind": "artifact-update", "taskId": task["id"], "contextId": task["contextId"],
             "artifact": artifact, "append": False, "lastChunk": True,
         }))
-
         task["status"]["state"] = "completed"
         task["status"]["timestamp"] = datetime.now(timezone.utc).isoformat()
         yield sse(make_jsonrpc_response(request_id, result={
             "kind": "status-update", "taskId": task["id"], "contextId": task["contextId"],
             "status": task["status"], "final": True,
         }))
-
         yield sse(make_jsonrpc_response(request_id, result={"kind": "task", "task": dict(task)}))
 
     return StreamingResponse(events(), media_type="text/event-stream")
 
-async def _handle_get(request_id, params):
+async def _handle_get(request_id, params, shape):
     task = tasks.get(params["id"])
     if not task:
         return Response(content=json.dumps(make_jsonrpc_response(request_id, error={
@@ -276,7 +308,7 @@ async def _handle_get(request_id, params):
         result["history"] = []
     return Response(content=json.dumps(make_jsonrpc_response(request_id, result=result)), media_type="application/json")
 
-async def _handle_cancel(request_id, params):
+async def _handle_cancel(request_id, params, shape):
     task = tasks.get(params["id"])
     if not task:
         return Response(content=json.dumps(make_jsonrpc_response(request_id, error={
@@ -286,7 +318,7 @@ async def _handle_cancel(request_id, params):
     task["status"]["timestamp"] = datetime.now(timezone.utc).isoformat()
     return Response(content=json.dumps(make_jsonrpc_response(request_id, result=task)), media_type="application/json")
 
-async def _handle_list(request_id, params):
+async def _handle_list(request_id, params, shape):
     result = list(tasks.values())
     if params.get("status"):
         result = [t for t in result if t["status"]["state"] == params["status"]]
@@ -298,25 +330,30 @@ async def _handle_list(request_id, params):
         "tasks": result[:page_size], "totalSize": total, "pageSize": page_size,
     })), media_type="application/json")
 
-async def _handle_resubscribe(request_id, params):
+async def _handle_resubscribe(request_id, params, shape):
     task = tasks.get(params["id"])
     if not task:
+        def sse(data):
+            return f"data: {json.dumps(data)}\n\n"
         async def err():
             yield sse(make_jsonrpc_response(request_id, error={"code": -32001, "message": "Task not found"}))
         return StreamingResponse(err(), media_type="text/event-stream")
+    def sse(data):
+        return f"data: {json.dumps(data)}\n\n"
     async def events():
         yield sse(make_jsonrpc_response(request_id, result={"kind": "task", "task": dict(task)}))
         if task["status"]["state"] in ("completed", "failed", "canceled", "rejected"):
             return
     return StreamingResponse(events(), media_type="text/event-stream")
 
-async def _handle_push_set(request_id, params):
+async def _handle_push_set(request_id, params, shape):
+    import uuid
     config_id = str(uuid.uuid4())
     config = {"id": config_id, "taskId": params["taskId"], "url": params["url"], "token": params.get("token", "")}
     push_configs.setdefault(params["taskId"], []).append(config)
     return Response(content=json.dumps(make_jsonrpc_response(request_id, result=config)), media_type="application/json")
 
-async def _handle_push_get(request_id, params):
+async def _handle_push_get(request_id, params, shape):
     configs = push_configs.get(params["taskId"], [])
     if not configs:
         return Response(content=json.dumps(make_jsonrpc_response(request_id, error={
@@ -324,12 +361,12 @@ async def _handle_push_get(request_id, params):
         })), media_type="application/json", status_code=200)
     return Response(content=json.dumps(make_jsonrpc_response(request_id, result=configs[0])), media_type="application/json")
 
-async def _handle_push_list(request_id, params):
+async def _handle_push_list(request_id, params, shape):
     return Response(content=json.dumps(make_jsonrpc_response(request_id, result={
         "configs": push_configs.get(params["taskId"], []),
     })), media_type="application/json")
 
-async def _handle_push_delete(request_id, params):
+async def _handle_push_delete(request_id, params, shape):
     configs = push_configs.get(params["taskId"], [])
     configs = [c for c in configs if c["id"] != params["id"]]
     push_configs[params["taskId"]] = configs
@@ -341,18 +378,45 @@ async def _complete_after_delay(task_id, delay_secs, user_text):
     if task:
         complete_task(task_id, user_text)
 
-# ─── App ───
+# ─── Apps per shape ───
 
-PORT = 9996
-app = Starlette(
-    debug=True,
-    routes=[
-        Route("/.well-known/agent-card.json", handle_agent_card, methods=["GET"]),
-        Route("/", handle_dispatch, methods=["POST"]),
-    ],
-    middleware=[Middleware(CORSMiddleware, allow_origins=["*"])],
-)
+PORT_WRAPPED = 9996
+PORT_DIRECT_TASK = 9997
+PORT_DIRECT_MSG = 9998
+
+def create_app(agent_card_handler, dispatch_handler):
+    return Starlette(
+        debug=True,
+        routes=[
+            Route("/.well-known/agent-card.json", agent_card_handler, methods=["GET"]),
+            Route("/", dispatch_handler, methods=["POST"]),
+        ],
+        middleware=[Middleware(CORSMiddleware, allow_origins=["*"])],
+    )
+
+app_wrapped = create_app(handle_agent_card_wrapped, handle_dispatch_wrapped)
+app_direct_task = create_app(handle_agent_card_direct_task, handle_dispatch_direct_task)
+app_direct_msg = create_app(handle_agent_card_direct_msg, handle_dispatch_direct_msg)
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="info")
+    config_wrapped = uvicorn.Config(app_wrapped, host="127.0.0.1", port=PORT_WRAPPED, log_level="warning")
+    config_direct_task = uvicorn.Config(app_direct_task, host="127.0.0.1", port=PORT_DIRECT_TASK, log_level="warning")
+    config_direct_msg = uvicorn.Config(app_direct_msg, host="127.0.0.1", port=PORT_DIRECT_MSG, log_level="warning")
+
+    server_wrapped = uvicorn.Server(config_wrapped)
+    server_direct_task = uvicorn.Server(config_direct_task)
+    server_direct_msg = uvicorn.Server(config_direct_msg)
+
+    async def serve_all():
+        await asyncio.gather(
+            server_wrapped.serve(),
+            server_direct_task.serve(),
+            server_direct_msg.serve(),
+        )
+
+    print(f"Serving wrapped on http://127.0.0.1:{PORT_WRAPPED}")
+    print(f"Serving direct-task on http://127.0.0.1:{PORT_DIRECT_TASK}")
+    print(f"Serving direct-message on http://127.0.0.1:{PORT_DIRECT_MSG}")
+
+    asyncio.run(serve_all())
