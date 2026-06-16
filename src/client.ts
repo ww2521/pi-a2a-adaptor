@@ -35,6 +35,7 @@ const METHODS = {
 
 const ENDPOINTS = {
   AGENT_CARD: "/.well-known/agent-card.json",
+  AGENT_CARD_ALT: "/.well-known/agent.json",
   DISPATCH: "/",
 } as const;
 
@@ -55,9 +56,22 @@ export class A2AClient {
 
   async discoverAgent(url: string): Promise<RemoteAgent> {
     const agentUrl = new URL(url);
-    const cardUrl = `${agentUrl.origin}${ENDPOINTS.AGENT_CARD}`;
-    const card = (await this.httpGet(cardUrl)) as AgentCard;
-    return { ...card, url: card.url || url, discoveredAt: Date.now() } as RemoteAgent;
+    const origin = agentUrl.origin;
+
+    // Try standard A2A path first
+    const cardUrl = `${origin}${ENDPOINTS.AGENT_CARD}`;
+    try {
+      const card = (await this.httpGet(cardUrl)) as AgentCard;
+      return { ...card, url: card.url || url, discoveredAt: Date.now() } as RemoteAgent;
+    } catch (err: any) {
+      // 404 → try LiteLLM agent.json fallback
+      if (err.message && err.message.includes("HTTP 404")) {
+        const altUrl = `${origin}${ENDPOINTS.AGENT_CARD_ALT}`;
+        const card = (await this.httpGet(altUrl)) as AgentCard;
+        return { ...card, url: card.url || url, discoveredAt: Date.now() } as RemoteAgent;
+      }
+      throw err;
+    }
   }
 
   // ─── Core Methods ───
@@ -279,7 +293,10 @@ export class A2AClient {
   private nextRequestId(): string { this.requestIdCounter++; return `${Date.now()}-${this.requestIdCounter.toString(36)}`; }
   private generateId(): string { return `ctx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`; }
   private delay(ms: number): Promise<void> { return new Promise((r) => setTimeout(r, ms)); }
-  private getDispatchUrl(agent: RemoteAgent): string { const origin = new URL(agent.url).origin; return `${origin}${ENDPOINTS.DISPATCH}`; }
+  private getDispatchUrl(agent: RemoteAgent): string {
+    // Use agent.url as-is (may contain proxy path like /a2a/{agent_id})
+    return agent.url;
+  }
 
   // ─── HTTP Transport ───
 
