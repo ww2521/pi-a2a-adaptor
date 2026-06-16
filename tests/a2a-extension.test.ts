@@ -8,6 +8,7 @@
  * Run: npx vitest run tests/a2a-extension.test.ts
  */
 
+import * as path from "node:path";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { A2AClient } from "../src/client.js";
 import { TaskManager } from "../src/task-manager.js";
@@ -446,5 +447,41 @@ describe("E14: Agent verification and refresh", () => {
     // Stale agent should be removed
     expect(reg.list().length).toBe(1);
     expect(reg.list()[0].url).toBe(BASE_URL);
+  });
+});
+
+// ═══════════════════════════════════════════
+// E15: Gateway discovery + verify end-to-end
+// ═══════════════════════════════════════════
+describe("E15: Gateway discovery + verify end-to-end", () => {
+  it("[E15-01] listGatewayAgents + discoverAgentFromGateway end-to-end", async () => {
+    // Full /a2a-discover-all flow: list agents → discover each → add to registry
+    const agents = await client.listGatewayAgents(GATEWAY_URL, "test-token-123");
+    expect(agents.length).toBeGreaterThan(0);
+    const reg = new AgentRegistry(300000);
+    for (const ga of agents) {
+      const ref = ga.name || ga.agent_name || ga.agent_id;
+      const agent = await client.discoverAgentFromGateway(GATEWAY_URL, ref);
+      reg.add(agent);
+    }
+    // All discovered agents should be in registry
+    expect(reg.list().length).toBe(agents.length);
+    // Verify they all have proxy-compatible URLs
+    for (const a of reg.list()) {
+      expect(a.url).toContain("/a2a/");
+    }
+  });
+
+  it("[E15-02] verifyAll after discover-all still finds all agents reachable", async () => {
+    const reg = new AgentRegistry(300000);
+    const agents = await client.listGatewayAgents(GATEWAY_URL, "test-token-123");
+    for (const ga of agents) {
+      const ref = ga.name || ga.agent_name || ga.agent_id;
+      const agent = await client.discoverAgentFromGateway(GATEWAY_URL, ref);
+      reg.add(agent);
+    }
+    const { ok, stale } = await reg.verifyAll(client);
+    expect(ok.length).toBe(agents.length);
+    expect(stale.length).toBe(0);
   });
 });
