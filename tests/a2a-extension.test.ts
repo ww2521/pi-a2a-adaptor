@@ -366,7 +366,7 @@ describe("E13: LiteLLM Gateway batch discovery", () => {
 
   it("[E13-02] discoverAgentFromGateway discovers agent via gateway path", async () => {
     const agents = await client.listGatewayAgents(GATEWAY_URL, "test-token-123");
-    const ref = agents[0].agent_name;
+    const ref = agents[0].name || agents[0].agent_name;
     const agent = await client.discoverAgentFromGateway(GATEWAY_URL, ref);
     expect(agent).toHaveProperty("name");
     expect(agent).toHaveProperty("url");

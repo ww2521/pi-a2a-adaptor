@@ -230,12 +230,12 @@ export default function (pi: ExtensionAPI) {
         const failed: string[] = [];
         for (const ga of gatewayAgents) {
           try {
-            const ref = ga.agent_name || ga.agent_id;
+            const ref = ga.name || ga.agent_name || ga.agent_id;
             const agent = await a2aClient!.discoverAgentFromGateway(gatewayUrl, ref);
             discovered.push(`${agent.name} (${agent.url}) - ${agent.skills.length} skills`);
             ctx.ui?.notify?.(`Discovered: ${agent.name}`, "info");
           } catch (err: any) {
-            failed.push(`${ga.agent_name || ga.agent_id}: ${err.message}`);
+            failed.push(`${ga.name || ga.agent_name || ga.agent_id}: ${err.message}`);
           }
         }
         let summary = `Discovered ${discovered.length}/${gatewayAgents.length} agents:\n${discovered.join("\n")}`;

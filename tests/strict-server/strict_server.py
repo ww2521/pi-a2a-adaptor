@@ -437,7 +437,7 @@ async def _complete_after_delay(task_id, delay_secs, user_text):
 
 async def handle_gateway_v1_agents(request: Request):
     """GET /v1/agents — return list of registered agents."""
-    return Response(content=json.dumps(gateway_agents), media_type="application/json")
+    return Response(content=json.dumps({"agents": gateway_agents}), media_type="application/json")
 
 async def handle_gateway_agent_card(request: Request):
     """GET /a2a/{agent_id}/.well-known/agent-card.json — returns card with proxy URL."""

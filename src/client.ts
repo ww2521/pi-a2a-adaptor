@@ -234,6 +234,10 @@ export class A2AClient {
   async listGatewayAgents(gatewayUrl: string, apiKey: string): Promise<any[]> {
     const url = `${gatewayUrl.replace(/\/$/, '')}/v1/agents`;
     const res = await this.httpGet(url, { Authorization: `Bearer ${apiKey}` });
+    // LiteLLM returns { agents: [...] }
+    if (res && typeof res === "object" && "agents" in res) {
+      return (res as any).agents;
+    }
     return Array.isArray(res) ? res : [];
   }
 
