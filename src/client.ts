@@ -56,17 +56,20 @@ export class A2AClient {
 
   async discoverAgent(url: string): Promise<RemoteAgent> {
     const agentUrl = new URL(url);
+    // Preserve the full path (e.g. /a2a/my-agent) for proxy-compatible URLs
+    const basePath = agentUrl.pathname.replace(/\/$/, '');
     const origin = agentUrl.origin;
+    const base = basePath ? `${origin}${basePath}` : origin;
 
     // Try standard A2A path first
-    const cardUrl = `${origin}${ENDPOINTS.AGENT_CARD}`;
+    const cardUrl = `${base}${ENDPOINTS.AGENT_CARD}`;
     try {
       const card = (await this.httpGet(cardUrl)) as AgentCard;
       return { ...card, url: card.url || url, discoveredAt: Date.now() } as RemoteAgent;
     } catch (err: any) {
       // 404 → try LiteLLM agent.json fallback
       if (err.message && err.message.includes("HTTP 404")) {
-        const altUrl = `${origin}${ENDPOINTS.AGENT_CARD_ALT}`;
+        const altUrl = `${base}${ENDPOINTS.AGENT_CARD_ALT}`;
         const card = (await this.httpGet(altUrl)) as AgentCard;
         return { ...card, url: card.url || url, discoveredAt: Date.now() } as RemoteAgent;
       }
