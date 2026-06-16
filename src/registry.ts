@@ -19,7 +19,7 @@ export class AgentRegistry {
     const cached = this.registry.get(url);
     if (cached && !force && Date.now() - cached.cachedAt < this.cacheTtl) return cached.agent;
     const card = await client.discoverAgent(url);
-    this.registry.set(url, { agent: card, cachedAt: Date.now() });
+    this.registry.set(url, { agent: card, cachedAt: Date.now(), lastVerified: Date.now() });
     return card;
   }
 

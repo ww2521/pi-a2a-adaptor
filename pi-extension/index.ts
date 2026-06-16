@@ -43,6 +43,7 @@ interface PersistedAgent {
 const STORAGE_DIR = path.join(process.env.HOME || "", ".pi", "agent", "a2a");
 const CONFIG_FILE = `${STORAGE_DIR}/config.json`;
 const AGENTS_FILE = `${STORAGE_DIR}/agents.json`;
+const GATEWAYS_FILE = `${STORAGE_DIR}/gateways.json`;
 
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -75,6 +76,23 @@ function loadAgents(): PersistedAgent[] {
 
 function saveAgents(agents: PersistedAgent[]): void {
   try { ensureStorageDir(); fs.writeFileSync(AGENTS_FILE, JSON.stringify(agents, null, 2)); } catch { /* ignore */ }
+}
+
+// Persisted gateway URLs for auto-discover-all on refresh
+const persistedGateways: Set<string> = new Set();
+
+function loadGateways(): Set<string> {
+  try {
+    if (fs.existsSync(GATEWAYS_FILE)) {
+      const arr: string[] = JSON.parse(fs.readFileSync(GATEWAYS_FILE, "utf-8"));
+      return new Set(arr);
+    }
+  } catch { /* ignore */ }
+  return new Set();
+}
+
+function saveGateways(): void {
+  try { ensureStorageDir(); fs.writeFileSync(GATEWAYS_FILE, JSON.stringify([...persistedGateways], null, 2)); } catch { /* ignore */ }
 }
 
 // ─── Default Config ───
@@ -187,11 +205,15 @@ export default function (pi: ExtensionAPI) {
     if (saved.security?.bearerToken !== undefined) config.security.bearerToken = saved.security!.bearerToken;
     if (saved.security?.apiKey !== undefined) config.security.apiKey = saved.security!.apiKey;
 
+    // Load persisted gateways
+    const savedGateways = loadGateways();
+    savedGateways.forEach((g) => persistedGateways.add(g));
+
     a2aClient = new A2AClient(config.client, config.security);
     registry = new AgentRegistry(config.discovery.cacheTtl);
     // Restore persisted agents
     const savedAgents = loadAgents();
-    for (const a of savedAgents) registry.add(a);
+    for (const sa of savedAgents) registry.add(sa.agent);
 
     taskManager = new TaskManager(a2aClient, registry);
     if (savedAgents.length > 0) {
@@ -202,12 +224,13 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async () => {
-    // Persist config and agents before shutdown
+    // Persist config, agents, and gateways before shutdown
     if (config) saveConfig(config);
     if (registry) {
       const agents = registry.list();
       saveAgents(agents.map((a) => ({ agent: a, lastVerified: Date.now() })));
     }
+    saveGateways();
 
     // Stop all async polling
     for (const [, tr] of taskMap) {
@@ -274,8 +297,39 @@ export default function (pi: ExtensionAPI) {
    * /a2a-refresh
    */
   pi.registerCommand("a2a-refresh", {
-    description: "Verify all discovered agents and remove unreachable ones",
+    description: "Auto-discover-all from persisted gateways, then verify all agents and remove unreachable ones",
     handler: async (_args, ctx) => {
+      // Step 1: Auto-discover-all from persisted gateways
+      const gateways = [...persistedGateways];
+      const apiKey = config?.security.bearerToken;
+      for (const gw of gateways) {
+        if (!apiKey) {
+          ctx.ui?.notify?.(`Skipping gateway ${gw}: no bearerToken configured`, "warning");
+          continue;
+        }
+        ctx.ui?.notify?.(`Discovering agents from ${gw}...`, "info");
+        try {
+          const gatewayAgents = await a2aClient!.listGatewayAgents(gw, apiKey);
+          let newCount = 0;
+          for (const ga of gatewayAgents) {
+            try {
+              const ref = ga.name || ga.agent_name || ga.agent_id;
+              const existing = registry!.list().find((a) => a.url === `${gw}/a2a/${ref}`);
+              if (!existing) {
+                const agent = await a2aClient!.discoverAgentFromGateway(gw, ref);
+                registry!.add(agent);
+                newCount++;
+              }
+            } catch { /* skip individual failures */ }
+          }
+          if (newCount > 0) ctx.ui?.notify?.(`${newCount} new agent(s) from ${gw}`, "info");
+        } catch {
+          ctx.ui?.notify?.(`Gateway ${gw} unreachable`, "warning");
+          persistedGateways.delete(gw);
+        }
+      }
+
+      // Step 2: Verify all agents
       const agents = registry!.list();
       if (agents.length === 0) {
         ctx.ui?.notify?.("No agents to verify", "info");
@@ -330,6 +384,8 @@ export default function (pi: ExtensionAPI) {
             failed.push(`${ga.name || ga.agent_name || ga.agent_id}: ${err.message}`);
           }
         }
+        // Persist gateway URL for future /a2a-refresh auto-discover-all
+        persistedGateways.add(gatewayUrl);
         let summary = `Discovered ${discovered.length}/${gatewayAgents.length} agents:\n${discovered.join("\n")}`;
         if (failed.length > 0) summary += `\n\nFailed ${failed.length}:\n${failed.join("\n")}`;
         ctx.ui?.notify?.(summary, "success");
@@ -732,7 +788,7 @@ Discovery:
   /a2a-discover <url>           - Discover agent at URL
   /a2a-agents                   - List discovered agents
   /a2a-discover-all <url> [--key <api-key>]  - Discover all agents from LiteLLM Gateway
-  /a2a-refresh                  - Verify all agents and remove unreachable ones
+  /a2a-refresh                  - Verify agents + auto-discover-all from last gateway
 
 Task Management:
   /a2a-send <agent> <message>   - Send task (waits for result)
