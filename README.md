@@ -16,7 +16,7 @@ Inspired by [pi-a2a-communication](https://github.com/DrOlu/pi-a2a-communication
 - **Task Orchestration** — Chain and parallel task execution with artifact passing
 - **Long-running Tasks** — Configurable polling with timeout for tasks that take minutes
 - **Push Notifications** — Register callback URLs for async task completion
-- **11 Commands** — Full CLI interface via `/a2a-*` commands
+- **13 Commands** — Full CLI interface via `/a2a-*` commands
 - **2 Tools** — LLM-callable tools for single and parallel agent calls
 
 ## Quick Start
@@ -59,13 +59,22 @@ No build step required. Pi uses [jiti](https://github.com/unjs/jiti) to load Typ
 /a2a-chain scout "Find bugs in main.py" | worker "Fix {previous}"
 ```
 
+### Send Task Async (Non-blocking)
+
+```
+/a2a-send-async https://your-agent.example.com "Run a long analysis"
+/a2a-pending
+```
+
 ## Commands
 
 | Command | Description |
 |---|---|
 | `/a2a-discover <url>` | Discover an A2A agent at a URL |
 | `/a2a-agents` | List all discovered agents |
-| `/a2a-send <agent> <message>` | Send a task to an agent — `<agent>` can be name, URL, or list number from `/a2a-agents` (auto-polls for completion) |
+| `/a2a-send <agent> <message>` | Send a task — `<agent>` can be name, URL, or list number (waits for result) |
+| `/a2a-send-async <agent> <msg>` | Send a task asynchronously (returns immediately, notifies on completion) |
+| `/a2a-pending` | List pending async tasks |
 | `/a2a-broadcast <msg> --agents <urls>` | Broadcast to multiple agents in parallel |
 | `/a2a-chain <agent1> <task1> \| <agent2> <task2>` | Chain tasks sequentially (`{previous}` placeholder) |
 | `/a2a-status <task-id> <agent-url>` | Get task status |
@@ -106,7 +115,11 @@ pi-a2a-adaptor/
 ├── pi-extension/
 │   └── index.ts           # pi extension entry (commands + tools)
 └── tests/
-    └── a2a-client.test.ts # 60 integration tests
+    ├── a2a-client.test.ts        # 60 protocol-level tests
+    ├── a2a-extension.test.ts     # 12 extension/command tests
+    ├── a2a-multi-shape.test.ts   # 8 multi-shape response tests
+    └── strict-server/
+        └── strict_server.py      # 3-port schema-strict mock server
 ```
 
 ## Testing
@@ -116,7 +129,7 @@ npm install
 npx vitest run
 ```
 
-The test suite runs 60 integration tests against a mock A2A server that implements the fasta2a wire format, covering:
+The test suite runs **80 tests across 3 test files** against a schema-strict mock server that implements the fasta2a wire format, covering:
 
 - Agent Card discovery
 - `message/send` (sync and async with polling)
@@ -127,6 +140,8 @@ The test suite runs 60 integration tests against a mock A2A server that implemen
 - Part types (text, file-bytes, file-uri, data)
 - Long-running task polling with timeout
 - Error code handling
+- **Multi-shape response handling** (wrapped, direct-task, direct-message)
+- **Extension command patterns** (send-async, chain, parallel, text extraction)
 
 ## Configuration
 
