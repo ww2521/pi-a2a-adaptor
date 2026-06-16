@@ -388,11 +388,13 @@ export default function (pi: ExtensionAPI) {
       const taskId = parts[0];
       try {
         let agentUrl: string | null = null;
+        let fullTaskId: string = taskId;
 
         // 1. Check if we have this task locally
         const rec = findTaskRecord(taskId);
         if (rec) {
           agentUrl = rec.agentUrl;
+          fullTaskId = rec.taskId;
         }
 
         // 2. Use provided URL if available
@@ -406,7 +408,7 @@ export default function (pi: ExtensionAPI) {
         }
 
         const agent = resolveAgent(agentUrl);
-        const task = await a2aClient!.getTask(agent, taskId);
+        const task = await a2aClient!.getTask(agent, fullTaskId);
         const info = [
           `Task ID: ${task.id}`,
           `State: ${task.status.state}`,
@@ -433,17 +435,21 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       const taskId = parts[0];
-      const agentRef = parts[1];
       try {
         let agent: RemoteAgent;
+        let fullTaskId: string = taskId;
         // Try local record first
         const rec = findTaskRecord(taskId);
         if (rec) {
           agent = resolveAgent(rec.agentUrl);
+          fullTaskId = rec.taskId;
+        } else if (parts.length >= 2) {
+          agent = resolveAgent(parts[1]);
         } else {
-          agent = resolveAgent(agentRef);
+          ctx.ui?.notify?.(`Task ${taskId.slice(0, 8)} not found. Use /a2a-cancel <task-id> <agent-url>`, "error");
+          return;
         }
-        const task = await a2aClient!.cancelTask(agent, taskId);
+        const task = await a2aClient!.cancelTask(agent, fullTaskId);
         ctx.ui?.notify?.(`Task ${taskId} canceled (state: ${task.status.state})`, "success");
       } catch (err: any) {
         ctx.ui?.notify?.(`Failed to cancel: ${err.message}`, "error");
@@ -490,18 +496,22 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       const taskId = parts[0];
-      const agentRef = parts[1];
       try {
         let agent: RemoteAgent;
+        let fullTaskId: string = taskId;
         const rec = findTaskRecord(taskId);
         if (rec) {
           agent = resolveAgent(rec.agentUrl);
+          fullTaskId = rec.taskId;
+        } else if (parts.length >= 2) {
+          agent = resolveAgent(parts[1]);
         } else {
-          agent = resolveAgent(agentRef);
+          ctx.ui?.notify?.(`Task ${taskId.slice(0, 8)} not found. Use /a2a-resubscribe <task-id> <agent-url>`, "error");
+          return;
         }
-        ctx.ui?.notify?.(`Resubscribing to task ${taskId.slice(0, 8)}...`, "info");
+        ctx.ui?.notify?.(`Resubscribing to task ${fullTaskId.slice(0, 8)}...`, "info");
         const updates: string[] = [];
-        await a2aClient!.resubscribeToTask(agent, taskId, (u) => {
+        await a2aClient!.resubscribeToTask(agent, fullTaskId, (u) => {
           updates.push(`[${u.status?.state || "update"}] ${JSON.stringify(u).slice(0, 200)}`);
         });
         if (updates.length === 0) {
