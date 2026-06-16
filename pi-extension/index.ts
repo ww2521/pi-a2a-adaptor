@@ -35,6 +35,11 @@ const taskMap = new Map<string, TaskRecord>();
 
 // ─── Persistence ───
 
+interface PersistedAgent {
+  agent: RemoteAgent;
+  lastVerified: number;
+}
+
 const STORAGE_DIR = path.join(process.env.HOME || "", ".pi", "agent", "a2a");
 const CONFIG_FILE = `${STORAGE_DIR}/config.json`;
 const AGENTS_FILE = `${STORAGE_DIR}/agents.json`;
@@ -59,7 +64,7 @@ function saveConfig(cfg: A2AConfig): void {
   try { ensureStorageDir(); fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2)); } catch { /* ignore */ }
 }
 
-function loadAgents(): RemoteAgent[] {
+function loadAgents(): PersistedAgent[] {
   try {
     if (fs.existsSync(AGENTS_FILE)) {
       return JSON.parse(fs.readFileSync(AGENTS_FILE, "utf-8"));
@@ -68,7 +73,7 @@ function loadAgents(): RemoteAgent[] {
   return [];
 }
 
-function saveAgents(agents: RemoteAgent[]): void {
+function saveAgents(agents: PersistedAgent[]): void {
   try { ensureStorageDir(); fs.writeFileSync(AGENTS_FILE, JSON.stringify(agents, null, 2)); } catch { /* ignore */ }
 }
 
@@ -199,7 +204,10 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_shutdown", async () => {
     // Persist config and agents before shutdown
     if (config) saveConfig(config);
-    if (registry) saveAgents(registry.list());
+    if (registry) {
+      const agents = registry.list();
+      saveAgents(agents.map((a) => ({ agent: a, lastVerified: Date.now() })));
+    }
 
     // Stop all async polling
     for (const [, tr] of taskMap) {
@@ -259,6 +267,27 @@ export default function (pi: ExtensionAPI) {
       }
       const list = agents.map((a, i) => `${i + 1}. ${a.name} (${a.url}) - ${a.skills.length} skills`).join("\n");
       ctx.ui?.notify?.(`Discovered Agents:\n${list}\n\nUse number, name, or URL with /a2a-send`, "info");
+    },
+  });
+
+  /**
+   * /a2a-refresh
+   */
+  pi.registerCommand("a2a-refresh", {
+    description: "Verify all discovered agents and remove unreachable ones",
+    handler: async (_args, ctx) => {
+      const agents = registry!.list();
+      if (agents.length === 0) {
+        ctx.ui?.notify?.("No agents to verify", "info");
+        return;
+      }
+      ctx.ui?.notify?.(`Verifying ${agents.length} agent(s)...`, "info");
+      const { ok, stale } = await registry!.verifyAll(a2aClient!);
+      let msg = `Verified: ${ok.length} reachable`;
+      if (stale.length > 0) {
+        msg += `, ${stale.length} unreachable:\n${stale.map((u) => `  ✗ ${u}`).join("\n")}`;
+      }
+      ctx.ui?.notify?.(msg, ok.length > 0 ? "success" : "warning");
     },
   });
 
@@ -703,6 +732,7 @@ Discovery:
   /a2a-discover <url>           - Discover agent at URL
   /a2a-agents                   - List discovered agents
   /a2a-discover-all <url> [--key <api-key>]  - Discover all agents from LiteLLM Gateway
+  /a2a-refresh                  - Verify all agents and remove unreachable ones
 
 Task Management:
   /a2a-send <agent> <message>   - Send task (waits for result)

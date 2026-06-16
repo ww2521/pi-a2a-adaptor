@@ -4,6 +4,7 @@ import type { RemoteAgent } from "./types.js";
 interface CachedAgent {
   agent: RemoteAgent;
   cachedAt: number;
+  lastVerified: number;
 }
 
 export class AgentRegistry {
@@ -23,7 +24,30 @@ export class AgentRegistry {
   }
 
   add(agent: RemoteAgent): void {
-    this.registry.set(agent.url, { agent, cachedAt: Date.now() });
+    this.registry.set(agent.url, { agent, cachedAt: Date.now(), lastVerified: Date.now() });
+  }
+
+  /**
+   * Verify all agents in the registry by fetching their agent card.
+   * Returns { ok: RemoteAgent[], stale: string[] } with URLs that failed.
+   */
+  async verifyAll(client: A2AClient, timeoutMs = 3000): Promise<{ ok: RemoteAgent[]; stale: string[] }> {
+    const ok: RemoteAgent[] = [];
+    const stale: string[] = [];
+    const entries = [...this.registry.entries()];
+    await Promise.all(entries.map(async ([url, entry]) => {
+      try {
+        const card = await client.discoverAgent(url);
+        entry.agent = card;
+        entry.lastVerified = Date.now();
+        ok.push(card);
+      } catch {
+        stale.push(url);
+      }
+    }));
+    // Remove stale agents
+    for (const url of stale) this.registry.delete(url);
+    return { ok, stale };
   }
 
   lookup(ref: string): RemoteAgent | null {
