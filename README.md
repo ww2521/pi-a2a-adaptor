@@ -81,7 +81,7 @@ No build step required. Pi uses [jiti](https://github.com/unjs/jiti) to load Typ
 | `/a2a-cancel <task-id> <agent-url>` | Cancel a task |
 | `/a2a-list <agent-url> [context-id]` | List tasks on a remote agent |
 | `/a2a-resubscribe <task-id> <agent-url>` | Resubscribe to a task's event stream |
-| `/a2a-config <key> <value>` | Configure timeout, retries, cache TTL, etc. |
+| `/a2a-config <key> <value>` | Configure timeout, retries, cache TTL, auth, etc. |
 | `/a2a-help` | Show help |
 
 ## LLM Tools
@@ -147,11 +147,22 @@ The test suite runs **80 tests across 3 test files** against a schema-strict moc
 
 Edit `~/.pi/agent/settings.json` or use `/a2a-config` at runtime:
 
-```
+```bash
 /a2a-config timeout 60000
 /a2a-config retryAttempts 3
 /a2a-config cacheTtl 300000
 /a2a-config verifySsl true
+
+# Bearer Token auth
+/a2a-config defaultScheme bearer
+/a2a-config bearerToken "your-token-here"
+
+# API Key auth
+/a2a-config defaultScheme apiKey
+/a2a-config apiKey "your-api-key"
+
+# Disable auth
+/a2a-config defaultScheme none
 ```
 
 ## Development
