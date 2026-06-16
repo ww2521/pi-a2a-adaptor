@@ -117,7 +117,12 @@ export class A2AClient {
 
     // Shape 3: direct Message (role + parts present)
     if (raw && typeof raw === "object" && "role" in raw && "parts" in raw) {
-      return raw as Message;
+      const msg = raw as Message & { taskId?: string };
+      // If LiteLLM includes taskId, it's an async task → poll for completion
+      if (msg.taskId && options.polling) {
+        return this.waitForTask(agent, msg.taskId, options.polling);
+      }
+      return msg as Message;
     }
 
     throw new A2AError(JSONRPCErrorCode.InvalidAgentResponse, "Invalid response: no task or message\nRaw: " + JSON.stringify(raw).slice(0, 500));

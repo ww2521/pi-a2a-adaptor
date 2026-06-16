@@ -361,7 +361,7 @@ export default function (pi: ExtensionAPI) {
       const keyMatch = args.match(/--key\s+(\S+)/);
       const apiKey = keyMatch ? keyMatch[1] : config?.security.bearerToken;
       if (!apiKey) {
-        ctx.ui?.notify?.("No API key. Set via /a2a-config bearerToken <key> or pass --key <key>", "error");
+        ctx.ui?.notify?.("No API key. Run:\n  /a2a-config defaultScheme bearer\n  /a2a-config bearerToken <key>\nor pass --key <key> directly", "error");
         return;
       }
       try {

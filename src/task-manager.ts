@@ -75,7 +75,28 @@ export class TaskManager {
   }
 
   private asTask(result: A2ATask | any): A2ATask {
+    // Already a task
     if ((result as A2ATask).status) return result as A2ATask;
+    // LiteLLM returns direct message: { kind: "message", role, parts, messageId }
+    if ((result as any).role && (result as any).parts) {
+      return {
+        id: (result as any).taskId || (result as any).messageId || `msg-${Date.now()}`,
+        contextId: (result as any).contextId || `ctx-${Date.now()}`,
+        kind: "task",
+        status: {
+          state: "completed",
+          timestamp: new Date().toISOString(),
+          message: {
+            kind: "message",
+            role: (result as any).role,
+            parts: (result as any).parts,
+            messageId: (result as any).messageId || "",
+          },
+        },
+        artifacts: [],
+        metadata: {},
+      } as A2ATask;
+    }
     throw new Error(`Expected a task, got: ${JSON.stringify(result).slice(0, 200)}`);
   }
 
