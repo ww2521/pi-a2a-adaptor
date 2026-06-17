@@ -452,22 +452,30 @@ export default function (pi: ExtensionAPI) {
       const message = parts.slice(1).join(" ");
       try {
         const agent = resolveAgent(agentRef);
-        const result = await taskManager!.sendTask(agent, message, { timeout: config!.taskDefaults.sendAsyncTimeout });
+        const result = await taskManager!.sendTask(agent, message, {
+          timeout: config!.taskDefaults.sendAsyncTimeout,
+          polling: { intervalMs: 2000, maxAttempts: 0, timeoutMs: 0 }, // disable built-in polling, we handle it ourselves
+        });
 
-        if (!result || !(result as any).id || !(result as any).status) {
+        // Always record the task first, then decide on polling
+        let taskId = (result as any)?.id as string | undefined;
+        const state = (result as any)?.status?.state as string | undefined;
+
+        if (!taskId) {
+          // LiteLLM returned direct reply — not a task
           const text = extractTextFromResult(result as any);
           ctx.ui?.notify?.(`Agent replied:\n${text}`, "success");
           return;
         }
 
-        const taskId = (result as any).id as string;
-        const state = (result as any).status?.state;
+        const isTerminal = state && ["completed", "failed", "canceled", "rejected"].includes(state);
 
-        if (state && ["completed", "failed", "canceled", "rejected"].includes(state)) {
+        if (isTerminal) {
           const text = extractTextFromResult(result as any);
+          recordTask(taskId, agent, message, null);
           ctx.ui?.notify?.(`[A2A ${agent.name}] Task ${taskId.slice(0, 8)} completed:\n${text}`, "success");
-          recordTask(taskId, agent, message);
         } else {
+          // Background polling
           const pollInterval = setInterval(async () => {
             try {
               const task = await a2aClient!.getTask(agent, taskId);
