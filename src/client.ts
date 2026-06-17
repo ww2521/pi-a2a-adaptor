@@ -54,23 +54,28 @@ export class A2AClient {
 
   // ─── Agent Discovery ───
 
-  async discoverAgent(url: string): Promise<RemoteAgent> {
+  async discoverAgent(url: string, apiKey?: string): Promise<RemoteAgent> {
     const agentUrl = new URL(url);
     // Preserve the full path (e.g. /a2a/my-agent) for proxy-compatible URLs
     const basePath = agentUrl.pathname.replace(/\/$/, '');
     const origin = agentUrl.origin;
     const base = basePath ? `${origin}${basePath}` : origin;
 
+    // Optional headers for gated gateways (e.g. LiteLLM with auth)
+    const headers: Record<string, string> | undefined = apiKey
+      ? { Authorization: `Bearer ${apiKey}` }
+      : undefined;
+
     // Try standard A2A path first
     const cardUrl = `${base}${ENDPOINTS.AGENT_CARD}`;
     try {
-      const card = (await this.httpGet(cardUrl)) as AgentCard;
+      const card = (await this.httpGet(cardUrl, headers)) as AgentCard;
       return { ...card, url: card.url || url, discoveredAt: Date.now() } as RemoteAgent;
     } catch (err: any) {
       // 404 → try LiteLLM agent.json fallback
       if (err.message && err.message.includes("HTTP 404")) {
         const altUrl = `${base}${ENDPOINTS.AGENT_CARD_ALT}`;
-        const card = (await this.httpGet(altUrl)) as AgentCard;
+        const card = (await this.httpGet(altUrl, headers)) as AgentCard;
         return { ...card, url: card.url || url, discoveredAt: Date.now() } as RemoteAgent;
       }
       throw err;
@@ -256,9 +261,9 @@ export class A2AClient {
    * Discover an agent registered in LiteLLM Gateway by agent name or ID.
    * Uses /a2a/{agent_id}/.well-known/agent-card.json (standard path).
    */
-  async discoverAgentFromGateway(gatewayUrl: string, agentRef: string): Promise<RemoteAgent> {
+  async discoverAgentFromGateway(gatewayUrl: string, agentRef: string, apiKey?: string): Promise<RemoteAgent> {
     const base = gatewayUrl.replace(/\/$/, '');
-    return this.discoverAgent(`${base}/a2a/${agentRef}`);
+    return this.discoverAgent(`${base}/a2a/${agentRef}`, apiKey);
   }
 
   // ─── Private Helpers ───

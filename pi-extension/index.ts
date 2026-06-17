@@ -329,7 +329,7 @@ export default function (pi: ExtensionAPI) {
               const ref = ga.name || ga.agent_name || ga.agent_id;
               const existing = registry!.list().find((a) => a.url === `${gw}/a2a/${ref}`);
               if (!existing) {
-                const agent = await a2aClient!.discoverAgentFromGateway(gw, ref);
+                const agent = await a2aClient!.discoverAgentFromGateway(gw, ref, apiKey);
                 registry!.add(agent);
                 newCount++;
               }
@@ -389,7 +389,7 @@ export default function (pi: ExtensionAPI) {
         for (const ga of gatewayAgents) {
           try {
             const ref = ga.name || ga.agent_name || ga.agent_id;
-            const agent = await a2aClient!.discoverAgentFromGateway(gatewayUrl, ref);
+            const agent = await a2aClient!.discoverAgentFromGateway(gatewayUrl, ref, apiKey);
             registry!.add(agent);
             discovered.push(`${agent.name} (${agent.url}) - ${agent.skills.length} skills`);
             ctx.ui?.notify?.(`Discovered: ${agent.name}`, "info");

@@ -50,7 +50,7 @@ async function main() {
     console.log(`\n─── Step 2: discover agent "${ref}" ───`);
 
     try {
-      const agent = await client.discoverAgentFromGateway(gatewayUrl, ref);
+      const agent = await client.discoverAgentFromGateway(gatewayUrl, ref, apiKey);
       console.log(`  ✓ Discovered: ${agent.name}`);
       console.log(`  → agent.url = "${agent.url}"`);
       console.log(`  → This URL is used for ALL A2A POST requests (message/send, tasks/get)`);
