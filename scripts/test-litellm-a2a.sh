@@ -6,7 +6,7 @@
 #
 # 用途: 不依赖 pi-a2a-adaptor，直接验证 LiteLLM A2A gateway 是否正常工作
 
-set -euo pipefail
+set -uo pipefail
 
 LITELLM_URL="${1:?Usage: $0 <litellm-url> <api-key> [agent-name]}"
 API_KEY="${2:?Usage: $0 <litellm-url> <api-key> [agent-name]}"
@@ -63,7 +63,7 @@ echo ""
 # Step 3: message/send (blocking=false, 异步模式)
 echo "─── Step 3: POST message/send (blocking=false) ───"
 echo "发送: hello"
-SEND_RESP=$(curl -sf --connect-timeout 20 --max-time 30 -X POST \
+SEND_RESP=$(curl -s --connect-timeout 20 --max-time 30 -X POST \
   "$LITELLM_URL/a2a/$AGENT_NAME" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $API_KEY" \
@@ -82,7 +82,14 @@ SEND_RESP=$(curl -sf --connect-timeout 20 --max-time 30 -X POST \
         "blocking": false
       }
     }
-  }' 2>&1)
+  }' 2>&1 || true)
+if [ -z "$SEND_RESP" ] || echo "$SEND_RESP" | grep -qi "timeout\|connection refused\|could not resolve"; then
+  echo "❌ message/send 超时或连接失败"
+  echo "响应: $SEND_RESP"
+  echo ""
+  echo "═══ 结果: LiteLLM 连接失败 ═══"
+  exit 1
+fi
 echo "$SEND_RESP" | python3 -m json.tool 2>/dev/null || echo "$SEND_RESP"
 
 # 提取 task ID
