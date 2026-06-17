@@ -201,3 +201,13 @@ npx vitest
 ## License
 
 MIT
+
+## Known Issues
+
+### LiteLLM Gateway — Internal Polling Timeout
+
+When using `/a2a-discover-all` with a LiteLLM Agent Gateway, `message/send` triggers internal polling inside LiteLLM. If the upstream agent takes longer than ~15 seconds to complete, LiteLLM times out before returning the result to the client. This timeout is hardcoded in LiteLLM's A2A gateway implementation and cannot be configured via `litellm_params` or environment variables.
+
+**Workarounds:**
+- Use `/a2a-send` or `/a2a-send-async` with the **direct agent URL** (bypassing LiteLLM) for long-running tasks.
+- Keep LiteLLM for agent discovery (`/a2a-discover-all`), then switch to direct URLs for task execution.
