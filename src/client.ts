@@ -386,6 +386,14 @@ export class A2AClient {
     const url = this.getDispatchUrl(agent);
     const body = JSON.stringify(request);
     const timeout = options.timeout ?? this.config.timeout;
+
+    // DEBUG: log auth headers for sendMessage/getTask
+    const authH = this.buildAuthHeaders();
+    console.log(`[httpPostJSON DEBUG] url: ${url}`);
+    console.log(`[httpPostJSON DEBUG] method: ${request.method}`);
+    console.log(`[httpPostJSON DEBUG] defaultScheme: ${this.security.defaultScheme}`);
+    console.log(`[httpPostJSON DEBUG] hasBearerToken: ${!!this.security.bearerToken}`);
+    console.log(`[httpPostJSON DEBUG] authHeaders:`, JSON.stringify(authH));
     return new Promise((resolve, reject) => {
       const parsed = new URL(url);
       const req = this.httpMod(url).request({
