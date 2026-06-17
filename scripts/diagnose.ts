@@ -93,7 +93,11 @@ async function main() {
       console.log(`  state: ${state || "NONE"}`);
 
       if (!taskId) {
-        console.log(`  ❌ No taskId — result shape:`, JSON.stringify(result).slice(0, 300));
+        // LiteLLM returned a direct message response (sync), not an async task
+        console.log(`  ⚠️  LiteLLM returned a DIRECT MESSAGE, not a task`);
+        console.log(`     This means the agent completed synchronously.`);
+        console.log(`     result shape:`, JSON.stringify(result).slice(0, 300));
+        console.log(`     For /a2a-send-async, this is treated as an immediate reply.`);
         continue;
       }
 
