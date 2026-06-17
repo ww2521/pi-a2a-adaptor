@@ -129,7 +129,7 @@ const DEFAULT_CONFIG: A2AConfig = {
   },
   taskDefaults: {
     sendTimeout: 120000,
-    sendAsyncTimeout: 30000,
+    sendAsyncTimeout: 120000,
   },
 };
 

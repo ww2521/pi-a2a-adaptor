@@ -317,7 +317,7 @@ export class A2AClient {
   private buildSendConfig(options: TaskOptions) {
     return {
       acceptedOutputModes: options.acceptedOutputModes ?? ["text/plain", "application/json"],
-      blocking: options.blocking ?? false,
+      blocking: options.blocking !== undefined ? options.blocking : false,
       historyLength: options.historyLength,
       pushNotificationConfig: options.pushNotificationConfig,
     };
@@ -345,7 +345,9 @@ export class A2AClient {
       const parsed = new URL(url);
       const req = this.httpMod(url).request({
         hostname: parsed.hostname, port: parsed.port, path: parsed.pathname, method: "POST",
-        headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body), ...this.buildAuthHeaders() }, timeout,
+        headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body), ...this.buildAuthHeaders() },
+        timeout,
+        agent: false, // force new connection every time — avoids stale keep-alive sockets hanging on gateway
       }, (res: http.IncomingMessage) => {
         let data = "";
         res.on("data", (chunk: string) => (data += chunk));
@@ -362,7 +364,9 @@ export class A2AClient {
       const parsed = new URL(url);
       const req = this.httpMod(url).request({
         hostname: parsed.hostname, port: parsed.port, path: parsed.pathname, method: "GET",
-        headers: { ...this.buildAuthHeaders(), ...extraHeaders }, timeout: this.config.timeout,
+        headers: { ...this.buildAuthHeaders(), ...extraHeaders },
+        timeout: this.config.timeout,
+        agent: false, // avoid stale keep-alive sockets
       }, (res: http.IncomingMessage) => {
         let data = "";
         res.on("data", (chunk: string) => (data += chunk));
@@ -383,6 +387,7 @@ export class A2AClient {
         hostname: new URL(url).hostname, port: new URL(url).port, path: new URL(url).pathname, method: "POST",
         headers: { "Content-Type": "application/json", Accept: "text/event-stream", "Content-Length": Buffer.byteLength(body), ...this.buildAuthHeaders() },
         timeout: this.config.timeout,
+        agent: false, // avoid stale keep-alive sockets
       }, (res: http.IncomingMessage) => {
         let buf = "";
         res.on("data", (chunk: string) => {
