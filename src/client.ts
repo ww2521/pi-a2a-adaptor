@@ -66,6 +66,13 @@ export class A2AClient {
       ? { Authorization: `Bearer ${apiKey}` }
       : undefined;
 
+    // DEBUG: log what we're sending
+    console.log(`[discoverAgent DEBUG] url input: ${url}`);
+    console.log(`[discoverAgent DEBUG] apiKey length: ${apiKey ? apiKey.length : 'none'}`);
+    if (headers) {
+      console.log(`[discoverAgent DEBUG] headers:`, JSON.stringify(headers));
+    }
+
     // Try standard A2A path first
     const cardUrl = `${base}${ENDPOINTS.AGENT_CARD}`;
     try {
