@@ -378,6 +378,16 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       try {
+        // If --key was provided explicitly, configure it as the default bearer token
+        // so all subsequent requests (sendMessage, getTask, etc.) also carry auth
+        const keyProvidedExplicitly = keyMatch !== null;
+        if (keyProvidedExplicitly && (!config?.security.bearerToken || config.security.defaultScheme !== "bearer")) {
+          if (config) {
+            config.security.defaultScheme = "bearer";
+            config.security.bearerToken = apiKey;
+          }
+        }
+
         ctx.ui?.notify?.("Fetching agents from gateway...", "info");
         const gatewayAgents = await a2aClient!.listGatewayAgents(gatewayUrl, apiKey);
         if (gatewayAgents.length === 0) {
