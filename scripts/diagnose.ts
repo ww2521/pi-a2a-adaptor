@@ -13,7 +13,7 @@ const keyMatch = args.join(" ").match(/--key\s+(\S+)/);
 const apiKey = keyMatch ? keyMatch[1] : "";
 
 const client = new A2AClient(
-  { timeout: 10000, retryAttempts: 0, retryDelay: 0, maxConcurrentTasks: 10, streamingEnabled: true },
+  { timeout: 30000, retryAttempts: 0, retryDelay: 0, maxConcurrentTasks: 10, streamingEnabled: true },
   {
     defaultScheme: apiKey ? "bearer" : "none",
     bearerToken: apiKey || undefined,
@@ -77,6 +77,8 @@ async function main() {
 
       // Step 3: Test sendMessage
       console.log(`\n─── Step 3: sendMessage ───`);
+      console.log(`  POST to: ${agent.url}/`);
+      console.log(`  Timeout: 30s`);
       const result = await client.sendMessage(agent, {
         role: "user",
         parts: [{ kind: "text", text: "diagnose test" }],
