@@ -454,7 +454,7 @@ export default function (pi: ExtensionAPI) {
         const agent = resolveAgent(agentRef);
         const result = await taskManager!.sendTask(agent, message, {
           timeout: config!.taskDefaults.sendAsyncTimeout,
-          blocking: true, // let HTTP connection wait for agent to finish
+          blocking: false,
           polling: { intervalMs: 2000, maxAttempts: 0, timeoutMs: 0 },
         });
 
