@@ -454,7 +454,8 @@ export default function (pi: ExtensionAPI) {
         const agent = resolveAgent(agentRef);
         const result = await taskManager!.sendTask(agent, message, {
           timeout: config!.taskDefaults.sendAsyncTimeout,
-          polling: { intervalMs: 2000, maxAttempts: 0, timeoutMs: 0 }, // disable built-in polling, we handle it ourselves
+          blocking: true, // let HTTP connection wait for agent to finish
+          polling: { intervalMs: 2000, maxAttempts: 0, timeoutMs: 0 },
         });
 
         // Always record the task first, then decide on polling
