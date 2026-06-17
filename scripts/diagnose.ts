@@ -20,8 +20,13 @@ const client = new A2AClient(
 async function main() {
   console.log("═══ 诊断 /a2a-discover-all ═══");
   console.log("Gateway:", gatewayUrl);
-  console.log("API Key:", apiKey ? "✓ set" : "✗ not set");
+  console.log("API Key:", apiKey ? "✓ set (len=" + apiKey.length + ")" : "✗ not set");
   console.log();
+
+  // DEBUG: log raw args
+  console.log("DEBUG args:", args);
+  console.log("DEBUG keyMatch:", keyMatch);
+  console.log("DEBUG apiKey:", apiKey);
 
   // Step 1: Raw /v1/agents response
   console.log("─── Step 1: GET /v1/agents ───");
