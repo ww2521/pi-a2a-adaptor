@@ -96,20 +96,21 @@ export class A2AClient {
 
     // Shape 1: { task: A2ATask }
     if (raw && typeof raw === "object" && "task" in raw) {
-      const wrapped = raw as { task?: A2ATask; message?: Message };
+      const wrapped = raw as { task?: Record<string, unknown>; message?: Message };
       if (wrapped.task) {
-        if (!TERMINAL_STATES.has(wrapped.task.status.state) && options.polling) {
-          return this.waitForTask(agent, wrapped.task.id, options.polling);
+        const task = this.normalizeTask(wrapped.task);
+        if (!TERMINAL_STATES.has(task.status.state) && options.polling && (options.polling.maxAttempts ?? 60) > 0) {
+          return this.waitForTask(agent, task.id, options.polling);
         }
-        return wrapped.task;
+        return task;
       }
       if (wrapped.message) return wrapped.message;
     }
 
     // Shape 2: direct A2ATask (status + id present)
     if (raw && typeof raw === "object" && "status" in raw && "id" in raw) {
-      const task = raw as A2ATask;
-      if (!TERMINAL_STATES.has(task.status.state) && options.polling) {
+      const task = this.normalizeTask(raw as Record<string, unknown>);
+      if (!TERMINAL_STATES.has(task.status.state) && options.polling && (options.polling.maxAttempts ?? 60) > 0) {
         return this.waitForTask(agent, task.id, options.polling);
       }
       return task;
@@ -119,7 +120,7 @@ export class A2AClient {
     if (raw && typeof raw === "object" && "role" in raw && "parts" in raw) {
       const msg = raw as Message & { taskId?: string };
       // If LiteLLM includes taskId, it's an async task → poll for completion
-      if (msg.taskId && options.polling) {
+      if (msg.taskId && options.polling && (options.polling.maxAttempts ?? 60) > 0) {
         return this.waitForTask(agent, msg.taskId, options.polling);
       }
       return msg as Message;
@@ -153,21 +154,26 @@ export class A2AClient {
     const request = this.createRequest(METHODS.GET_TASK, params);
     const response = await this.httpPostJSON(agent, request);
     if (response.error) throw A2AError.fromResponse(response);
-    return response.result as unknown as A2ATask;
+    return this.normalizeTask(response.result as unknown as Record<string, unknown>);
   }
 
   async cancelTask(agent: RemoteAgent, taskId: string): Promise<A2ATask> {
     const request = this.createRequest(METHODS.CANCEL_TASK, { id: taskId });
     const response = await this.httpPostJSON(agent, request);
     if (response.error) throw A2AError.fromResponse(response);
-    return response.result as unknown as A2ATask;
+    return this.normalizeTask(response.result as unknown as Record<string, unknown>);
   }
 
   async listTasks(agent: RemoteAgent, params: ListTasksParams = {}): Promise<ListTasksResult> {
     const request = this.createRequest(METHODS.LIST_TASKS, params as unknown as Record<string, unknown>);
     const response = await this.httpPostJSON(agent, request);
     if (response.error) throw A2AError.fromResponse(response);
-    return response.result as unknown as ListTasksResult;
+    const raw = response.result as unknown as ListTasksResult;
+    // Normalize all tasks in the result
+    if (raw && Array.isArray(raw.tasks)) {
+      raw.tasks = raw.tasks.map(t => this.normalizeTask(t as unknown as Record<string, unknown>));
+    }
+    return raw;
   }
 
   async resubscribeToTask(agent: RemoteAgent, taskId: string, onUpdate: TaskUpdateCallback, signal?: AbortSignal): Promise<void> {
@@ -258,6 +264,33 @@ export class A2AClient {
   // ─── Private Helpers ───
 
   private readonly TERMINAL_STATES = TERMINAL_STATES;
+
+  /**
+   * Normalize a task returned by fasta2a (snake_case) to camelCase.
+   * fasta2a v0.6.1 uses `context_id` while the A2A client expects `contextId`.
+   */
+  private normalizeTask(raw: Record<string, unknown>): A2ATask {
+    // If already camelCase, return as-is
+    if ("contextId" in raw) return raw as unknown as A2ATask;
+    // Normalize snake_case → camelCase
+    const out: Record<string, unknown> = { ...raw };
+    if ("context_id" in out) {
+      out.contextId = out.context_id as string;
+      delete out.context_id;
+    }
+    // Normalize history messages too
+    if (Array.isArray(out.history)) {
+      out.history = (out.history as unknown[]).map((m: unknown) => {
+        if (typeof m !== "object" || m === null) return m;
+        const msg = { ...(m as Record<string, unknown>) };
+        if ("message_id" in msg) { msg.messageId = msg.message_id as string; delete msg.message_id; }
+        if ("task_id" in msg) { msg.taskId = msg.task_id as string; delete msg.task_id; }
+        if ("context_id" in msg) { msg.contextId = msg.context_id as string; delete msg.context_id; }
+        return msg;
+      });
+    }
+    return out as unknown as A2ATask;
+  }
 
   private async waitForTask(agent: RemoteAgent, taskId: string, options: NonNullable<TaskOptions["polling"]>): Promise<A2ATask> {
     const { intervalMs = 2000, maxAttempts = 60, timeoutMs = 120000 } = options;

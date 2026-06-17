@@ -519,3 +519,37 @@ describe("E17: LiteLLM message with taskId → auto-poll", () => {
     expect(text.length).toBeGreaterThan(0);
   });
 });
+
+// ═══════════════════════════════════════════
+// E18: maxAttempts=0 不应触发 waitForTask（send-async 模式）
+// ═══════════════════════════════════════════
+describe("E18: maxAttempts=0 bypasses built-in polling", () => {
+  it("[E18-01] sendMessage with polling.maxAttempts=0 returns immediately on submitted task", async () => {
+    // Use delay: message so mock server returns 'submitted' (non-terminal)
+    // This is the exact condition that triggered the bug with real async agents
+    const start = Date.now();
+    const result = await client.sendMessage(agent, userMsg("delay:5"), {
+      polling: { intervalMs: 1000, maxAttempts: 0, timeoutMs: 5000 },
+    });
+    const elapsed = Date.now() - start;
+    // Should return immediately (< 1s), not wait for polling
+    expect(elapsed).toBeLessThan(2000);
+    expect(result).toHaveProperty("id");
+    const task = result as any;
+    // With maxAttempts=0, waitForTask should NOT run
+    // So task should still be 'submitted' (delay:5 hasn't completed yet)
+    expect(task.status?.state).toBe("submitted");
+  });
+
+  it("[E18-02] sendMessage without polling still works normally", async () => {
+    const result = await client.sendMessage(agent, userMsg("no-polling test"));
+    expect(result).toHaveProperty("id");
+  });
+
+  it("[E18-03] sendMessage with polling.maxAttempts=1 does poll (regression guard)", async () => {
+    const result = await client.sendMessage(agent, userMsg("max-1 test"), {
+      polling: { intervalMs: 500, maxAttempts: 1, timeoutMs: 5000 },
+    });
+    expect(result).toHaveProperty("id");
+  });
+});
