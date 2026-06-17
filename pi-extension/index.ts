@@ -487,6 +487,7 @@ export default function (pi: ExtensionAPI) {
           ctx.ui?.notify?.(`[A2A ${agent.name}] Task ${taskId.slice(0, 8)} completed:\n${text}`, "success");
         } else {
           // Background polling
+          let pollErrorNotified = false;
           const pollInterval = setInterval(async () => {
             try {
               const task = await a2aClient!.getTask(agent, taskId);
@@ -501,8 +502,14 @@ export default function (pi: ExtensionAPI) {
                   ctx.ui?.notify?.(`[A2A ${agent.name}] Task ${taskId.slice(0, 8)} ${task.status.state}.`, "warning");
                 }
               }
-            } catch {
-              // Poll error — keep trying
+            } catch (e: any) {
+              // Poll error — keep trying but notify user after first failure
+              console.log("[send-async poll ERROR] taskId:", taskId?.slice(0,8), "agent.url:", agent.url, "error:", e?.message || e);
+              // Notify user only on first error (set flag to avoid spam)
+              if (!pollErrorNotified) {
+                pollErrorNotified = true;
+                ctx.ui?.notify?.(`[A2A ${agent.name}] Poll error for task ${taskId?.slice(0,8)}: ${e?.message || 'unknown'}\nagent.url: ${agent.url}`, "warning");
+              }
             }
           }, 5000);
 
