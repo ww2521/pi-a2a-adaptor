@@ -323,6 +323,60 @@ export default function (pi: ExtensionAPI) {
   });
 
   /**
+   * /a2a-clear-all
+   */
+  pi.registerCommand("a2a-clear-all", {
+    description: "Clear all discovered agents from local cache",
+    handler: async (_args, ctx) => {
+      const count = registry!.list().length;
+      if (count === 0) {
+        ctx.ui?.notify?.("No agents to clear", "info");
+        return;
+      }
+      registry!.clear();
+      ctx.ui?.notify?.(`Cleared ${count} agent(s). Cache is now empty.`, "success");
+    },
+  });
+
+  /**
+   * /a2a-clear <id|name>
+   */
+  pi.registerCommand("a2a-clear", {
+    description: "Remove a specific discovered agent by index, name, or URL",
+    handler: async (args, ctx) => {
+      const ref = args.trim();
+      if (!ref) {
+        ctx.ui?.notify?.("Usage: /a2a-clear <id|name|url>", "warning");
+        return;
+      }
+      // Try by index (1-based from /a2a-agents output)
+      const idx = parseInt(ref, 10);
+      if (!isNaN(idx) && idx > 0) {
+        const agents = registry!.list();
+        if (idx <= agents.length) {
+          const agent = agents[idx - 1];
+          registry!.remove(agent.url);
+          ctx.ui?.notify?.(`Removed: ${agent.name} (${agent.url})`, "success");
+          return;
+        }
+      }
+      // Try by name or URL
+      const found = registry!.lookup(ref);
+      if (found) {
+        registry!.remove(found.url);
+        ctx.ui?.notify?.(`Removed: ${found.name} (${found.url})`, "success");
+        return;
+      }
+      // Try by URL directly
+      if (registry!.remove(ref)) {
+        ctx.ui?.notify?.(`Removed: ${ref}`, "success");
+        return;
+      }
+      ctx.ui?.notify?.(`Agent not found: ${ref}. Use /a2a-agents to see the list.`, "error");
+    },
+  });
+
+  /**
    * /a2a-refresh
    */
   pi.registerCommand("a2a-refresh", {
@@ -927,6 +981,8 @@ Discovery:
   /a2a-discover-all             - Discover all agents from Nacos A2A Registry
   /a2a-discover-all-litellm <url> [--key <api-key>]  - Discover all agents from LiteLLM Gateway
   /a2a-refresh                  - Verify agents + auto-discover-all-litellm from last gateway
+  /a2a-clear-all                - Clear all discovered agents
+  /a2a-clear <id|name|url>      - Remove a specific agent
 
 Task Management:
   /a2a-send <agent> <message>   - Send task (waits for result)
@@ -966,6 +1022,8 @@ Examples:
   /a2a-broadcast "Check security" --agents https://agent1.com,https://agent2.com
   /a2a-chain scout "find bugs" | worker "fix {previous}"
   /a2a-config timeout 60000
+  /a2a-clear-all
+  /a2a-clear 1
       `.trim();
       ctx.ui?.notify?.(help, "info");
     },
