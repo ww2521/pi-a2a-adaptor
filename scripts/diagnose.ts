@@ -14,7 +14,11 @@ const apiKey = keyMatch ? keyMatch[1] : "";
 
 const client = new A2AClient(
   { timeout: 10000, retryAttempts: 0, retryDelay: 0, maxConcurrentTasks: 10, streamingEnabled: true },
-  { defaultScheme: "none", verifySsl: true }
+  {
+    defaultScheme: apiKey ? "bearer" : "none",
+    bearerToken: apiKey || undefined,
+    verifySsl: true,
+  }
 );
 
 async function main() {
