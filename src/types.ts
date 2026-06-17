@@ -260,12 +260,20 @@ export interface TaskDefaults {
   sendAsyncTimeout: number; // /a2a-send-async initial submit timeout (default 30000)
 }
 
+export interface NacosConfig {
+  serverAddr: string;
+  username: string;
+  password?: string;
+  namespaceId: string;
+}
+
 export interface A2AConfig {
   client: ClientConfig;
   server: ServerConfig;
   discovery: DiscoveryConfig;
   security: SecurityConfig;
   taskDefaults: TaskDefaults;
+  nacos: NacosConfig;
 }
 
 export interface ServerConfig {

@@ -9,12 +9,14 @@ import { A2AClient } from "../src/client.js";
 import { A2AError } from "../src/errors.js";
 import { AgentRegistry } from "../src/registry.js";
 import { TaskManager } from "../src/task-manager.js";
-import type { A2AConfig, RemoteAgent, TaskOptions } from "../src/types.js";
+import type { A2AConfig, NacosConfig, RemoteAgent, TaskOptions } from "../src/types.js";
+import { NacosRegistryClient } from "../src/nacos-registry.js";
 
 // ─── Global State ───
 
 let a2aClient: A2AClient | null = null;
 let registry: AgentRegistry | null = null;
+let nacosClient: NacosRegistryClient | null = null;
 let taskManager: TaskManager | null = null;
 let config: A2AConfig | null = null;
 
@@ -104,6 +106,13 @@ function saveGateways(): void {
 
 // ─── Default Config ───
 
+const DEFAULT_NACOS_CONFIG: NacosConfig = {
+  serverAddr: "",
+  username: "nacos",
+  password: "",
+  namespaceId: "public",
+};
+
 const DEFAULT_CONFIG: A2AConfig = {
   client: {
     timeout: 30000,
@@ -131,6 +140,7 @@ const DEFAULT_CONFIG: A2AConfig = {
     sendTimeout: 120000,
     sendAsyncTimeout: 120000,
   },
+  nacos: { ...DEFAULT_NACOS_CONFIG },
 };
 
 // ─── Helpers ───
@@ -217,12 +227,17 @@ export default function (pi: ExtensionAPI) {
     if (saved.security?.apiKey !== undefined) config.security.apiKey = saved.security!.apiKey;
     if (saved.taskDefaults?.sendTimeout !== undefined) config.taskDefaults.sendTimeout = saved.taskDefaults!.sendTimeout;
     if (saved.taskDefaults?.sendAsyncTimeout !== undefined) config.taskDefaults.sendAsyncTimeout = saved.taskDefaults!.sendAsyncTimeout;
+    if (saved.nacos?.serverAddr !== undefined) config.nacos.serverAddr = saved.nacos!.serverAddr;
+    if (saved.nacos?.username !== undefined) config.nacos.username = saved.nacos!.username;
+    if (saved.nacos?.password !== undefined) config.nacos.password = saved.nacos!.password;
+    if (saved.nacos?.namespaceId !== undefined) config.nacos.namespaceId = saved.nacos!.namespaceId;
 
     // Load persisted gateways
     const savedGateways = loadGateways();
     savedGateways.forEach((g) => persistedGateways.add(g));
 
     a2aClient = new A2AClient(config.client, config.security);
+    nacosClient = new NacosRegistryClient(config.nacos);
     registry = new AgentRegistry(config.discovery.cacheTtl);
     // Restore persisted agents
     const savedAgents = loadAgents();
@@ -252,6 +267,7 @@ export default function (pi: ExtensionAPI) {
     taskMap.clear();
     a2aClient?.cancelAll();
     a2aClient = null;
+    nacosClient = null;
     registry = null;
     taskManager = null;
     config = null;
@@ -359,15 +375,15 @@ export default function (pi: ExtensionAPI) {
   });
 
   /**
-   * /a2a-discover-all <gateway-url> [--key <api-key>]
+   * /a2a-discover-all-litellm <gateway-url> [--key <api-key>]
    */
-  pi.registerCommand("a2a-discover-all", {
+  pi.registerCommand("a2a-discover-all-litellm", {
     description: "Discover all agents from a LiteLLM Gateway",
     handler: async (args, ctx) => {
       const parts = args.trim().split(/\s+/);
       const gatewayUrl = parts[0];
       if (!gatewayUrl || gatewayUrl.startsWith("--")) {
-        ctx.ui?.notify?.("Usage: /a2a-discover-all <gateway-url> [--key <api-key>]", "warning");
+        ctx.ui?.notify?.("Usage: /a2a-discover-all-litellm <gateway-url> [--key <api-key>]", "warning");
         return;
       }
       // Use explicit --key, or fall back to configured bearerToken
@@ -407,13 +423,72 @@ export default function (pi: ExtensionAPI) {
             failed.push(`${ga.name || ga.agent_name || ga.agent_id}: ${err.message}`);
           }
         }
-        // Persist gateway URL for future /a2a-refresh auto-discover-all
+        // Persist gateway URL for future /a2a-refresh auto-discover-all-litellm
         persistedGateways.add(gatewayUrl);
         let summary = `Discovered ${discovered.length}/${gatewayAgents.length} agents:\n${discovered.join("\n")}`;
         if (failed.length > 0) summary += `\n\nFailed ${failed.length}:\n${failed.join("\n")}`;
         ctx.ui?.notify?.(summary, "success");
       } catch (err: any) {
         ctx.ui?.notify?.(`Gateway discovery failed: ${err.message}`, "error");
+      }
+    },
+  });
+
+  /**
+   * /a2a-discover-all
+   * Discover all agents from Nacos A2A Registry.
+   * Requires nacos.serverAddr configured (and password if auth enabled).
+   */
+  pi.registerCommand("a2a-discover-all", {
+    description: "Discover all agents from Nacos A2A Registry",
+    handler: async (_args, ctx) => {
+      if (!nacosClient) {
+        ctx.ui?.notify?.("Nacos not initialized", "error");
+        return;
+      }
+      const nacosCfg = nacosClient.getConfig();
+      if (!nacosCfg.serverAddr) {
+        ctx.ui?.notify?.("Nacos not configured. Run:\n  /a2a-config nacos.serverAddr <url>\n  /a2a-config nacos.password <password>", "error");
+        return;
+      }
+      try {
+        ctx.ui?.notify?.(`Fetching agents from Nacos (${nacosCfg.serverAddr})...`, "info");
+
+        // Step 1: List all agent cards from Nacos
+        const pageItems = await nacosClient.listAgentCards();
+        if (pageItems.length === 0) {
+          ctx.ui?.notify?.("No agents found in Nacos registry", "info");
+          return;
+        }
+
+        const discovered: string[] = [];
+        const failed: string[] = [];
+
+        for (const item of pageItems) {
+          try {
+            // Step 2: Get full agent card details to get the URL
+            const detail = await nacosClient.getAgentCardDetail(item.name);
+            const agentUrl = detail.url;
+            if (!agentUrl) {
+              failed.push(`${item.name}: no URL in AgentCard`);
+              continue;
+            }
+
+            // Step 3: Discover agent via .well-known to get full AgentCard
+            const agent = await a2aClient!.discoverAgent(agentUrl);
+            registry!.add(agent);
+            discovered.push(`${agent.name} (${agent.url}) - ${agent.skills.length} skills`);
+            ctx.ui?.notify?.(`Discovered: ${agent.name}`, "info");
+          } catch (err: any) {
+            failed.push(`${item.name}: ${err.message}`);
+          }
+        }
+
+        let summary = `Discovered ${discovered.length}/${pageItems.length} agents:\n${discovered.join("\n")}`;
+        if (failed.length > 0) summary += `\n\nFailed ${failed.length}:\n${failed.join("\n")}`;
+        ctx.ui?.notify?.(summary, "success");
+      } catch (err: any) {
+        ctx.ui?.notify?.(`Nacos discovery failed: ${err.message}`, "error");
       }
     },
   });
@@ -766,7 +841,7 @@ export default function (pi: ExtensionAPI) {
     handler: async (args, ctx) => {
       const parts = args.trim().split(/\s+/);
       if (parts.length < 2) {
-        ctx.ui?.notify?.("Usage: /a2a-config <key> <value>\nKeys: timeout, retryAttempts, cacheTtl, verifySsl, defaultScheme, bearerToken, apiKey, sendTimeout, sendAsyncTimeout", "warning");
+        ctx.ui?.notify?.("Usage: /a2a-config <key> <value>\nKeys: timeout, retryAttempts, cacheTtl, verifySsl, defaultScheme, bearerToken, apiKey, sendTimeout, sendAsyncTimeout,\n       nacos.serverAddr, nacos.username, nacos.password, nacos.namespaceId", "warning");
         return;
       }
       const key = parts[0];
@@ -805,6 +880,22 @@ export default function (pi: ExtensionAPI) {
           case "sendAsyncTimeout":
             config.taskDefaults.sendAsyncTimeout = parseInt(value, 10);
             break;
+          case "nacos.serverAddr":
+            config.nacos.serverAddr = value;
+            if (nacosClient) nacosClient.updateConfig({ serverAddr: value });
+            break;
+          case "nacos.username":
+            config.nacos.username = value;
+            if (nacosClient) nacosClient.updateConfig({ username: value });
+            break;
+          case "nacos.password":
+            config.nacos.password = value;
+            if (nacosClient) nacosClient.updateConfig({ password: value });
+            break;
+          case "nacos.namespaceId":
+            config.nacos.namespaceId = value;
+            if (nacosClient) nacosClient.updateConfig({ namespaceId: value });
+            break;
           default:
             ctx.ui?.notify?.(`Unknown key: ${key}`, "error");
             return;
@@ -812,7 +903,9 @@ export default function (pi: ExtensionAPI) {
         // Reinitialize client with new config
         a2aClient = new A2AClient(config.client, config.security);
         taskManager = new TaskManager(a2aClient, registry!);
-        ctx.ui?.notify?.(`Configuration updated: ${key} = ${value}`, "success");
+        // Password masking: show **** for nacos.password in the confirmation
+        const displayValue = key === "nacos.password" ? "****" : value;
+        ctx.ui?.notify?.(`Configuration updated: ${key} = ${displayValue}`, "success");
       } catch (err: any) {
         ctx.ui?.notify?.(`Failed to set config: ${err.message}`, "error");
       }
@@ -831,8 +924,9 @@ A2A Adaptor Commands:
 Discovery:
   /a2a-discover <url>           - Discover agent at URL
   /a2a-agents                   - List discovered agents
-  /a2a-discover-all <url> [--key <api-key>]  - Discover all agents from LiteLLM Gateway
-  /a2a-refresh                  - Verify agents + auto-discover-all from last gateway
+  /a2a-discover-all             - Discover all agents from Nacos A2A Registry
+  /a2a-discover-all-litellm <url> [--key <api-key>]  - Discover all agents from LiteLLM Gateway
+  /a2a-refresh                  - Verify agents + auto-discover-all-litellm from last gateway
 
 Task Management:
   /a2a-send <agent> <message>   - Send task (waits for result)
@@ -849,15 +943,19 @@ Configuration:
   /a2a-config <key> <value>     - Configure settings
                                 Keys: timeout, retryAttempts, cacheTtl, verifySsl,
                                 defaultScheme (none|bearer|apiKey), bearerToken, apiKey,
-                                sendTimeout, sendAsyncTimeout
+                                sendTimeout, sendAsyncTimeout,
+                                nacos.serverAddr, nacos.username, nacos.password, nacos.namespaceId
   /a2a-help                     - Show this help
 
 Examples:
   /a2a-discover https://agent.example.com
-  /a2a-discover-all http://localhost:4000 --key sk-1234567890abcdef
+  /a2a-discover-all-litellm http://localhost:4000 --key sk-1234567890abcdef
+  /a2a-config nacos.serverAddr http://localhost:8848
+  /a2a-config nacos.password your-secret
+  /a2a-discover-all
   /a2a-config defaultScheme bearer
   /a2a-config bearerToken sk-1234567890abcdef
-  /a2a-discover-all http://localhost:4000
+  /a2a-discover-all-litellm http://localhost:4000
   /a2a-agents
   /a2a-send 1 "Analyze this code"        # use list number
   /a2a-send https://agent.example.com "Analyze this code"

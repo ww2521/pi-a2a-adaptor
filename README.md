@@ -11,7 +11,8 @@ Inspired by [pi-a2a-communication](https://github.com/DrOlu/pi-a2a-communication
 ## Features
 
 - **Agent Discovery** — Auto-discover remote agents via `/.well-known/agent-card.json` (with `agent.json` fallback)
-- **LiteLLM Gateway** — Batch discover all agents from LiteLLM Agent Gateway (`/a2a-discover-all`)
+- **Nacos A2A Registry** — Discover agents from Nacos A2A Registry (`/a2a-discover-all`)
+- **LiteLLM Gateway** — Batch discover all agents from LiteLLM Agent Gateway (`/a2a-discover-all-litellm`)
 - **Task Management** — Send tasks, poll status, cancel, and list remote tasks
 - **Streaming** — SSE-based real-time task progress via `message/stream`
 - **Task Orchestration** — Chain and parallel task execution with artifact passing
@@ -43,11 +44,19 @@ No build step required. Pi uses [jiti](https://github.com/unjs/jiti) to load Typ
 /a2a-discover https://your-agent.example.com
 ```
 
+### Discover from Nacos A2A Registry
+
+```bash
+/a2a-config nacos.serverAddr http://localhost:8848
+/a2a-config nacos.password your-secret
+/a2a-discover-all
+```
+
 ### Discover from LiteLLM Gateway
 
 ```bash
-/a2a-discover-all http://localhost:4000         # uses configured bearerToken
-/a2a-discover-all http://localhost:4000 --key ***  # explicit key
+/a2a-discover-all-litellm http://localhost:4000         # uses configured bearerToken
+/a2a-discover-all-litellm http://localhost:4000 --key ***  # explicit key
 ```
 
 ### Send a Task
@@ -81,7 +90,8 @@ No build step required. Pi uses [jiti](https://github.com/unjs/jiti) to load Typ
 |---|---|
 | `/a2a-discover <url>` | Discover an A2A agent at a URL |
 | `/a2a-agents` | List all discovered agents |
-| `/a2a-discover-all <gateway-url> [--key <api-key>]` | Batch discover all agents from LiteLLM Gateway |
+| `/a2a-discover-all` | Discover all agents from Nacos A2A Registry |
+| `/a2a-discover-all-litellm <gateway-url> [--key <api-key>]` | Batch discover all agents from LiteLLM Gateway |
 | `/a2a-send <agent> <message>` | Send a task — `<agent>` can be name, URL, or list number (waits for result) |
 | `/a2a-send-async <agent> <msg>` | Send a task asynchronously (returns immediately, notifies on completion) |
 | `/a2a-pending` | List pending async tasks |
