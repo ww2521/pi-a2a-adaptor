@@ -5,7 +5,7 @@
  * 例如: npx tsx diagnose.ts http://192.168.1.100:4000 --key sk-xxx
  */
 
-import { A2AClient } from "../pi-a2a-adaptor/src/client.js";
+import { A2AClient } from "../src/client.js";
 
 const args = process.argv.slice(2);
 const gatewayUrl = args.find(a => !a.startsWith("--")) || "http://localhost:4000";
