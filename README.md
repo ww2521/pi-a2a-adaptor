@@ -19,7 +19,8 @@ Inspired by [pi-a2a-communication](https://github.com/DrOlu/pi-a2a-communication
 - **Long-running Tasks** — Configurable polling with timeout for tasks that take minutes
 - **Push Notifications** — Register callback URLs for async task completion
 - **Auth Support** — Bearer Token and API Key via `/a2a-config`
-- **14 Commands** — Full CLI interface via `/a2a-*` commands
+- **Multi-turn Conversations** — Per-agent context reuse with auto-continuation (24h idle expiry)
+- **17 Commands** — Full CLI interface via `/a2a-*` commands
 - **2 Tools** — LLM-callable tools for single and parallel agent calls
 
 ## Quick Start
@@ -92,8 +93,11 @@ No build step required. Pi uses [jiti](https://github.com/unjs/jiti) to load Typ
 | `/a2a-agents` | List all discovered agents |
 | `/a2a-discover-all` | Discover all agents from Nacos A2A Registry |
 | `/a2a-discover-all-litellm <gateway-url> [--key <api-key>]` | Batch discover all agents from LiteLLM Gateway |
-| `/a2a-send <agent> <message>` | Send a task — `<agent>` can be name, URL, or list number (waits for result) |
-| `/a2a-send-async <agent> <msg>` | Send a task asynchronously (returns immediately, notifies on completion) |
+| `/a2a-send <agent> <message>` | Send a task — auto-reuses conversation context |
+| `/a2a-send-async <agent> <msg>` | Send a task async — auto-reuses conversation context |
+| `/a2a-new <agent> <message>` | Force new conversation context |
+| `/a2a-reset <agent>` | Clear conversation context for an agent |
+| `/a2a-conversations` | List all conversation contexts |
 | `/a2a-pending` | List pending async tasks |
 | `/a2a-broadcast <msg> --agents <urls>` | Broadcast to multiple agents in parallel |
 | `/a2a-chain <agent1> <task1> \| <agent2> <task2>` | Chain tasks sequentially (`{previous}` placeholder) |
@@ -106,7 +110,7 @@ No build step required. Pi uses [jiti](https://github.com/unjs/jiti) to load Typ
 
 ## LLM Tools
 
-- **`a2a_call`** — Call a single A2A agent with a task message
+- **`a2a_call`** — Call a single A2A agent with a task message (auto-reuses conversation context)
 - **`a2a_parallel`** — Call multiple A2A agents in parallel with the same message
 
 ## Protocol Compliance
