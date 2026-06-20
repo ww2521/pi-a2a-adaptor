@@ -35,20 +35,155 @@ interface TaskRecord {
 
 const taskMap = new Map<string, TaskRecord>();
 
-// ─── Persistence ───
+// ─── Conversation Context Management ───
+// Per-agent, per-session conversation state.
+// Persisted to conversations.json so it survives within the same session.
 
-interface PersistedAgent {
-  agent: RemoteAgent;
-  lastVerified: number;
+interface ConversationEntry {
+  contextId: string;
+  topic: string;
+  lastMessageAt: number;
+  pendingAsyncTasks: string[];
 }
 
 const STORAGE_DIR = path.join(process.env.HOME || "", ".pi", "agent", "a2a");
 const CONFIG_FILE = `${STORAGE_DIR}/config.json`;
 const AGENTS_FILE = `${STORAGE_DIR}/agents.json`;
 const GATEWAYS_FILE = `${STORAGE_DIR}/gateways.json`;
+const CONVERSATIONS_FILE = `${STORAGE_DIR}/conversations.json`;
+const IDLE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+
+let conversations: Record<string, ConversationEntry> = {};
+let conversationSeq = 0; // monotonically increasing counter for display numbering
+
+function loadConversations(): void {
+  try {
+    if (fs.existsSync(CONVERSATIONS_FILE)) {
+      conversations = JSON.parse(fs.readFileSync(CONVERSATIONS_FILE, "utf-8"));
+    }
+  } catch { /* ignore */ }
+  conversations = conversations || {};
+  // Find max sequence number from existing entries for display
+  for (const entry of Object.values(conversations)) {
+    if (entry.topic) {
+      const m = entry.topic.match(/#(\d+)/);
+      if (m) conversationSeq = Math.max(conversationSeq, parseInt(m[1], 10));
+    }
+  }
+}
+
+function saveConversations(): void {
+  try {
+    ensureStorageDir();
+    const tmp = CONVERSATIONS_FILE + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify(conversations, null, 2));
+    fs.renameSync(tmp, CONVERSATIONS_FILE);
+  } catch { /* ignore */ }
+}
+
+/**
+ * Check if agent has pending async tasks.
+ * Returns the taskId string if pending, null otherwise.
+ */
+function getPendingAsync(agentUrl: string): string | null {
+  const entry = conversations[agentUrl];
+  if (!entry || entry.pendingAsyncTasks.length === 0) return null;
+  // Clean up any stale entries
+  entry.pendingAsyncTasks = entry.pendingAsyncTasks.filter(id => taskMap.has(id));
+  if (entry.pendingAsyncTasks.length === 0) {
+    saveConversations();
+    return null;
+  }
+  return entry.pendingAsyncTasks[0];
+}
+
+/**
+ * Resolve the contextId for a new message to an agent.
+ * Returns null if no context should be reused (no record, 24h idle, or pending async).
+ */
+function resolveConversationContext(agentUrl: string): string | null {
+  const entry = conversations[agentUrl];
+  if (!entry) return null;
+  // Pending async blocks all submissions
+  if (entry.pendingAsyncTasks.length > 0) return null;
+  // 24h idle → expired
+  if (Date.now() - entry.lastMessageAt > IDLE_TTL_MS) return null;
+  return entry.contextId;
+}
+
+function nextConversationNumber(): number {
+  conversationSeq++;
+  return conversationSeq;
+}
+
+/**
+ * Create a new conversation entry for an agent.
+ */
+function createConversationEntry(agentUrl: string, contextId: string, message: string): string {
+  const num = nextConversationNumber();
+  conversations[agentUrl] = {
+    contextId,
+    topic: `#${num} ${message.slice(0, 50)}`,
+    lastMessageAt: Date.now(),
+    pendingAsyncTasks: [],
+  };
+  saveConversations();
+  return `#${num}`;
+}
+
+/**
+ * Update conversation activity after a message is sent.
+ */
+function touchConversation(agentUrl: string): void {
+  const entry = conversations[agentUrl];
+  if (entry) {
+    entry.lastMessageAt = Date.now();
+    saveConversations();
+  }
+}
+
+/**
+ * Remove conversation entry for an agent.
+ */
+function removeConversationEntry(agentUrl: string): void {
+  delete conversations[agentUrl];
+  saveConversations();
+}
+
+/**
+ * Register an async task in the conversation entry.
+ */
+function registerAsyncTask(agentUrl: string, taskId: string): void {
+  const entry = conversations[agentUrl];
+  if (entry) {
+    if (!entry.pendingAsyncTasks.includes(taskId)) {
+      entry.pendingAsyncTasks.push(taskId);
+    }
+    entry.lastMessageAt = Date.now();
+    saveConversations();
+  }
+}
+
+/**
+ * Remove a completed async task from the conversation entry.
+ */
+function completeAsyncTask(agentUrl: string, taskId: string): void {
+  const entry = conversations[agentUrl];
+  if (entry) {
+    entry.pendingAsyncTasks = entry.pendingAsyncTasks.filter(id => id !== taskId);
+    saveConversations();
+  }
+}
+
+// ─── Persistence ───
+
+interface PersistedAgent {
+  agent: RemoteAgent;
+  lastVerified: number;
+}
 
 function ensureStorageDir(): void {
   if (!fs.existsSync(STORAGE_DIR)) fs.mkdirSync(STORAGE_DIR, { recursive: true });
@@ -244,6 +379,7 @@ export default function (pi: ExtensionAPI) {
     for (const sa of savedAgents) registry.add(sa.agent);
 
     taskManager = new TaskManager(a2aClient, registry);
+    loadConversations();
     if (savedAgents.length > 0) {
       ctx.ui?.notify?.(`A2A adaptor initialized. ${savedAgents.length} agents restored from last session.`, "info");
     } else {
@@ -551,7 +687,7 @@ export default function (pi: ExtensionAPI) {
    * /a2a-send <agent-ref> <message>
    */
   pi.registerCommand("a2a-send", {
-    description: "Send a task to an A2A agent",
+    description: "Send a task to an A2A agent (auto-reuses conversation context)",
     handler: async (args, ctx) => {
       const parts = args.trim().split(/\s+/);
       if (parts.length < 2) {
@@ -562,14 +698,35 @@ export default function (pi: ExtensionAPI) {
       const message = parts.slice(1).join(" ");
       try {
         const agent = resolveAgent(agentRef);
+
+        // Check for pending async — blocks all submissions
+        const pending = getPendingAsync(agent.url);
+        if (pending) {
+          ctx.ui?.notify?.(`Agent 正在执行异步任务 (${pending.slice(0, 8)})，请稍后重试`, "warning");
+          return;
+        }
+
+        // Resolve or create conversation context
+        const contextId = resolveConversationContext(agent.url);
+
         ctx.ui?.notify?.(`Sending to ${agent.name}...`, "info");
         const result = await taskManager!.sendTask(agent, message, {
+          contextId,
           timeout: config!.taskDefaults.sendTimeout,
           polling: { intervalMs: 2000, maxAttempts: 60, timeoutMs: config!.taskDefaults.sendTimeout },
         });
         const text = extractTextFromResult(result);
         recordTask((result as any).id, agent, message);
-        ctx.ui?.notify?.(`Result:\n${text}`, "success");
+
+        // Update conversation entry
+        if (contextId) {
+          touchConversation(agent.url);
+        } else {
+          createConversationEntry(agent.url, result.contextId, message);
+        }
+
+        const convLabel = conversations[agent.url]?.topic?.split(" ")[0] || "";
+        ctx.ui?.notify?.(`Result${convLabel}:\n${text}`, "success");
       } catch (err: any) {
         ctx.ui?.notify?.(`Task failed: ${err.message}`, "error");
       }
@@ -591,7 +748,20 @@ export default function (pi: ExtensionAPI) {
       const message = parts.slice(1).join(" ");
       try {
         const agent = resolveAgent(agentRef);
+
+        // Check for pending async — blocks all submissions
+        const pending = getPendingAsync(agent.url);
+        if (pending) {
+          ctx.ui?.notify?.(`Agent 正在执行异步任务 (${pending.slice(0, 8)})，请稍后重试`, "warning");
+          return;
+        }
+
+        // Resolve or create conversation context
+        const contextId = resolveConversationContext(agent.url);
+        let isNewConversation = !contextId;
+
         const result = await taskManager!.sendTask(agent, message, {
+          contextId,
           timeout: config!.taskDefaults.sendAsyncTimeout,
           blocking: false,
           polling: { intervalMs: 2000, maxAttempts: 0, timeoutMs: 0 },
@@ -624,6 +794,8 @@ export default function (pi: ExtensionAPI) {
                 clearInterval(pollInterval);
                 const rec = taskMap.get(taskId);
                 if (rec) rec.pollingInterval = null;
+                // Remove from pending async tracking
+                completeAsyncTask(agent.url, taskId);
                 const text = extractTextFromResult(task);
                 if (task.status.state === "completed") {
                   ctx.ui?.notify?.(`[A2A ${agent.name}] Task ${taskId.slice(0, 8)} completed:\n${text}`, "success");
@@ -641,9 +813,19 @@ export default function (pi: ExtensionAPI) {
           }, 5000);
 
           recordTask(taskId, agent, message, pollInterval);
+          // Register async task in conversation entry
+          registerAsyncTask(agent.url, taskId);
         }
 
-        ctx.ui?.notify?.(`Task submitted: ${taskId.slice(0, 8)} → ${agent.name}. Use /a2a-pending to track.`, "info");
+        // Create or update conversation entry
+        if (isNewConversation) {
+          const convLabel = createConversationEntry(agent.url, result.contextId, message);
+          ctx.ui?.notify?.(`Task submitted: ${taskId.slice(0, 8)} → ${agent.name} ${convLabel}. Use /a2a-pending to track.`, "info");
+        } else {
+          touchConversation(agent.url);
+          const convLabel = conversations[agent.url]?.topic?.split(" ")[0] || "";
+          ctx.ui?.notify?.(`Task submitted: ${taskId.slice(0, 8)} → ${agent.name} ${convLabel}. Use /a2a-pending to track.`, "info");
+        }
       } catch (err: any) {
         ctx.ui?.notify?.(`Task submission failed: ${err.message}`, "error");
       }
@@ -666,6 +848,94 @@ export default function (pi: ExtensionAPI) {
         return `${r.taskId.slice(0, 8)} → ${r.agentName} (${elapsed}s ago): ${r.message.slice(0, 60)}`;
       });
       ctx.ui?.notify?.(`Pending Tasks:\n${lines.join("\n")}\n\nUse /a2a-status <task-id> for details`, "info");
+    },
+  });
+
+  /**
+   * /a2a-new <agent-ref> <message>
+   */
+  pi.registerCommand("a2a-new", {
+    description: "Start a new conversation with an A2A agent (ignores existing context)",
+    handler: async (args, ctx) => {
+      const parts = args.trim().split(/\s+/);
+      if (parts.length < 2) {
+        ctx.ui?.notify?.("Usage: /a2a-new <agent-url-or-name> <message>", "warning");
+        return;
+      }
+      const agentRef = parts[0];
+      const message = parts.slice(1).join(" ");
+      try {
+        const agent = resolveAgent(agentRef);
+
+        // Check for pending async
+        const pending = getPendingAsync(agent.url);
+        if (pending) {
+          ctx.ui?.notify?.(`Agent 正在执行异步任务 (${pending.slice(0, 8)})，请稍后重试`, "warning");
+          return;
+        }
+
+        ctx.ui?.notify?.(`Starting new conversation with ${agent.name}...`, "info");
+        const result = await taskManager!.sendTask(agent, message, {
+          timeout: config!.taskDefaults.sendTimeout,
+          polling: { intervalMs: 2000, maxAttempts: 60, timeoutMs: config!.taskDefaults.sendTimeout },
+        });
+        const text = extractTextFromResult(result);
+        recordTask((result as any).id, agent, message);
+
+        // Force new conversation entry
+        const convLabel = createConversationEntry(agent.url, result.contextId, message);
+        ctx.ui?.notify?.(`Result${convLabel}:\n${text}`, "success");
+      } catch (err: any) {
+        ctx.ui?.notify?.(`Task failed: ${err.message}`, "error");
+      }
+    },
+  });
+
+  /**
+   * /a2a-reset <agent-ref>
+   */
+  pi.registerCommand("a2a-reset", {
+    description: "Clear conversation context for an agent",
+    handler: async (args, ctx) => {
+      const agentRef = args.trim();
+      if (!agentRef) {
+        ctx.ui?.notify?.("Usage: /a2a-reset <agent-url-or-name>", "warning");
+        return;
+      }
+      try {
+        const agent = resolveAgent(agentRef);
+        removeConversationEntry(agent.url);
+        ctx.ui?.notify?.(`已清除 ${agent.name} 的对话上下文`, "success");
+      } catch (err: any) {
+        ctx.ui?.notify?.(`Failed to reset: ${err.message}`, "error");
+      }
+    },
+  });
+
+  /**
+   * /a2a-conversations
+   */
+  pi.registerCommand("a2a-conversations", {
+    description: "List conversation contexts for all agents",
+    handler: async (_args, ctx) => {
+      const entries = Object.entries(conversations);
+      if (entries.length === 0) {
+        ctx.ui?.notify?.("No active conversations", "info");
+        return;
+      }
+      const lines: string[] = [];
+      for (const [url, entry] of entries) {
+        const name = registry?.list().find(a => a.url === url)?.name || url;
+        const hasPending = entry.pendingAsyncTasks.length > 0;
+        const idleMs = Date.now() - entry.lastMessageAt;
+        const idleStr = idleMs > 60 * 60 * 1000
+          ? `${Math.floor(idleMs / (60 * 60 * 1000))}h ago`
+          : `${Math.floor(idleMs / 60000)}m ago`;
+        const expired = idleMs > IDLE_TTL_MS ? " (expired)" : "";
+        const status = hasPending ? `⏳ ${entry.pendingAsyncTasks[0].slice(0, 8)}` : `✓ active${expired}`;
+        lines.push(`${name}:\n  ${entry.topic} — ${status} — ${idleStr}`);
+      }
+      ctx.ui?.notify?.(`Conversations:\n${lines.join("\n\n")}`, "info");
     },
   });
 
@@ -985,8 +1255,11 @@ Discovery:
   /a2a-clear <id|name|url>      - Remove a specific agent
 
 Task Management:
-  /a2a-send <agent> <message>   - Send task (waits for result)
-  /a2a-send-async <agent> <msg> - Send task (returns immediately, notifies on completion)
+  /a2a-send <agent> <message>   - Send task (auto-reuses conversation context)
+  /a2a-send-async <agent> <msg> - Send task async (auto-reuses conversation context)
+  /a2a-new <agent> <message>    - Force new conversation context
+  /a2a-reset <agent>            - Clear conversation context for an agent
+  /a2a-conversations            - List all conversation contexts
   /a2a-pending                  - List pending async tasks
   /a2a-broadcast <msg> --agents <urls> - Broadcast to multiple agents
   /a2a-chain <agent1> <task1> | <agent2> <task2> | ... - Chain tasks
@@ -1039,7 +1312,7 @@ Examples:
   pi.registerTool({
     name: "a2a_call",
     label: "A2A Agent Call",
-    description: "Call a remote A2A agent to perform a task",
+    description: "Call a remote A2A agent to perform a task (auto-reuses conversation context)",
     parameters: {
       type: "object",
       properties: {
@@ -1055,12 +1328,30 @@ Examples:
       }
       try {
         const agent = resolveAgent(params.agent_url as string);
+
+        // Check for pending async — block
+        const pending = getPendingAsync(agent.url);
+        if (pending) {
+          return { content: [{ type: "text" as const, text: `Agent 正在执行异步任务 (${pending.slice(0, 8)})，请稍后重试` }], isError: true };
+        }
+
+        const contextId = resolveConversationContext(agent.url);
+
         const result = await taskManager.sendTask(agent, params.message as string, {
+          contextId,
           timeout: (params.timeout as number) ?? 60000,
           polling: { intervalMs: 2000, maxAttempts: 30, timeoutMs: 120000 },
         });
         const text = extractTextFromResult(result);
         recordTask((result as any).id, agent, params.message as string);
+
+        // Update conversation entry
+        if (contextId) {
+          touchConversation(agent.url);
+        } else {
+          createConversationEntry(agent.url, result.contextId, params.message as string);
+        }
+
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error: ${err.message}` }], isError: true };

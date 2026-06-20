@@ -17,14 +17,14 @@ export class TaskManager {
     if (onUpdate) {
       return this.client.sendStreamingMessage(
         agent,
-        { role: "user", parts: [{ kind: "text", text: message }], messageId: this.genId() },
+        { role: "user", parts: [{ kind: "text", text: message }], messageId: this.genId(), contextId: options?.contextId || undefined },
         onUpdate,
         options
       );
     }
     const result = await this.client.sendMessage(
       agent,
-      { role: "user", parts: [{ kind: "text", text: message }], messageId: this.genId() },
+      { role: "user", parts: [{ kind: "text", text: message }], messageId: this.genId(), contextId: options?.contextId || undefined },
       options
     );
     return this.asTask(result);

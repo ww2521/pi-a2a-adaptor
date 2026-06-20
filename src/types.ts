@@ -326,6 +326,7 @@ export interface TaskOptions {
   acceptedOutputModes?: string[];
   pushNotificationConfig?: PushNotificationConfig;
   polling?: PollingOptions;
+  contextId?: string | null; // Reuse existing conversation context
   metadata?: Record<string, unknown>;
 }
 
