@@ -1,6 +1,6 @@
 {
   "name": "pi-a2a-adaptor",
-  "version": "1.8.1",
+  "version": "1.8.2-beta.0",
   "description": "A2A extension for Pi — `pi install npm:pi-a2a-adaptor`, then `/a2a-send` by name, URL, or agent number",
   "type": "module",
   "main": "src/index.js",
